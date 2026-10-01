@@ -1,0 +1,275 @@
+"""Every number quoted in the README and the FHE Accelerator Simulators decks.
+
+    python examples/results.py            # writes examples/results.md and prints it
+
+Re-run this after any model change and update the quoted tables from its output.
+All hardware coefficients are illustrative (see hardware.py).
+"""
+
+from __future__ import annotations
+
+import json
+import shutil
+import subprocess
+import time
+from dataclasses import replace
+from pathlib import Path
+
+from fhe_sim import (ACCELERATORS, PARAMS, BootOptions, SimConfig, bootstrap_trace, he_op_trace,
+                     simulate, summarise, summarise_trace)
+from fhe_sim.hardware import OpticalEngine
+from fhe_sim.search import analytic_bound, design_sweep, pareto, sram_sweep
+from fhe_sim.workload import output_level
+
+OUT = []
+ARK, HW, SMALL = PARAMS["ark"], ACCELERATORS["ark"], ACCELERATORS["small"]
+ALL = dict(min_ks=True, seeded_keys=True, otf_plaintexts=True)
+
+
+def h(title):
+    OUT.append(f"\n## {title}\n")
+
+
+def table(head, rows):
+    OUT.append("| " + " | ".join(head) + " |")
+    OUT.append("|" + "---|" * len(head))
+    for r in rows:
+        OUT.append("| " + " | ".join(str(x) for x in r) + " |")
+
+
+def ms(x):
+    return f"{1e3 * x:,.2f} ms"
+
+
+def gb(x):
+    return f"{x / 1e9:.2f}"
+
+
+def run(p=ARK, hw=HW, dvfs=False, **opts):
+    return summarise(simulate(bootstrap_trace(p, BootOptions(**opts)), SimConfig(hw, dvfs=dvfs)))
+
+
+# 1 ── parameter sets ────────────────────────────────────────────────────
+h("1. Parameter sets (sizes from params.py; levels from the trace generator)")
+rows = []
+for name, p in PARAMS.items():
+    t = bootstrap_trace(p)
+    rows.append([name, f"2^{p.log_n}", p.L, p.dnum, p.alpha, f"{p.ct_bytes(p.L) / 2**20:.1f}",
+                 f"{p.evk_bytes() / 2**20:.1f}", p.log_pq(), p.L - output_level(t), output_level(t), len(t.ops)])
+table(["set", "N", "L", "dnum", "alpha", "ct MiB (top)", "evk MiB", "log PQ (approx)",
+       "levels used by bootstrap", "levels left", "HE ops / bootstrap"], rows)
+
+# 2 ── single operations ─────────────────────────────────────────────────
+h("2. One HMult and one HRotate at the top level (ark set)")
+rows = []
+for op in ("hmult", "hrot"):
+    s = summarise_trace(he_op_trace(ARK, op))[op]
+    t = simulate(he_op_trace(ARK, op), HW).horizon
+    rows.append([op, s["ntt_limbs"] + s["intt_limbs"], f"{s['bconv'] / 1e6:.1f} M", f"{s['mac'] / 1e6:.1f} M",
+                 f"{s['key_bytes'] / 2**20:.0f} MiB", f"{1e6 * t:.1f} us"])
+table(["op", "NTT+iNTT limbs", "BConv mul-adds", "other mul-adds", "key loaded", "time on ARK-class"], rows)
+
+# 3 ── per-stage anatomy ─────────────────────────────────────────────────
+h("3. Anatomy of one bootstrap (ark set, baseline algorithm)")
+s = summarise_trace(bootstrap_trace(ARK))
+table(["stage", "HE ops", "HMult", "HRot", "PMult", "distinct keys", "NTT+iNTT limbs", "key GB requested",
+       "plaintext GB requested"],
+      [[k, v["ops"], v["hmult"], v["hrot"], v["pmult"], v["distinct_keys"], v["ntt_limbs"] + v["intt_limbs"],
+        gb(v["key_bytes"]), gb(v["pt_bytes"])] for k, v in s.items()])
+
+# 4 ── the default run ───────────────────────────────────────────────────
+h("4. Default run: ark set on the ARK-class digital design")
+m = run()
+OUT.append("```")
+from fhe_sim.metrics import format_report  # noqa: E402
+OUT.append(format_report(m))
+OUT.append(f"analytic lower bound {ms(analytic_bound(bootstrap_trace(ARK), HW)['bound_s'])}")
+OUT.append("```")
+
+# 5 ── acceleration techniques ───────────────────────────────────────────
+h("5. Acceleration techniques (algorithmic), on two designs")
+ladder = [("baseline (hoisted BSGS)", {}), ("no hoisting", dict(hoisting=False)),
+          ("+ Min-KS", dict(min_ks=True)), ("+ Min-KS + seeded keys", dict(min_ks=True, seeded_keys=True)),
+          ("+ Min-KS + seeded keys + OTF plaintexts", ALL)]
+for hwname, hw in (("ARK-class (memory-rich compute)", HW), ("small digital (NTT-starved)", SMALL)):
+    rows = []
+    for name, o in ladder:
+        r = run(hw=hw, **o)
+        rows.append([name, ms(r["per_bootstrap_s"]), gb(r["hbm_bytes"]["key"]), gb(r["hbm_bytes"]["total"]),
+                     f"{1e3 * r['energy']['per_bootstrap_J']:.0f}", r["bound"]])
+    OUT.append(f"\n**{hwname}**\n")
+    table(["algorithm", "bootstrap", "key GB", "HBM GB", "mJ", "verdict"], rows)
+
+# 6 ── SRAM ──────────────────────────────────────────────────────────────
+h("6. Scratchpad size against traffic (ARK-class design)")
+sizes = [128, 256, 384, 512, 768, 1024, 2048, 4096]
+for label, o in (("baseline algorithm", BootOptions()), ("Min-KS + seeded keys + OTF plaintexts", BootOptions(**ALL))):
+    OUT.append(f"\n**{label}**\n")
+    table(["SRAM MiB", "bootstrap", "key GB", "HBM GB", "key share", "verdict"],
+          [[r["sram_mib"], ms(r["latency_s"]), f"{r['key_GB']:.2f}", f"{r['hbm_GB']:.2f}",
+            f"{100 * r['key_share']:.0f}%", r["bound"]] for r in sram_sweep(ARK, HW, sizes, o)])
+OUT.append("\n**two bootstraps back to back, baseline algorithm (keys can be reused across bootstraps only if they all fit)**\n")
+table(["SRAM MiB", "per bootstrap", "key GB per bootstrap", "verdict"],
+      [[r["sram_mib"], ms(r["latency_s"]), f"{r['key_GB'] / 2:.2f}", r["bound"]]
+       for r in sram_sweep(ARK, HW, [512, 2048, 8192, 16384], BootOptions(n_boot=2))])
+
+# 7 ── regimes ───────────────────────────────────────────────────────────
+h("7. NTT-bound against memory-bound: verdict and bootstrap latency")
+ntts, hbms = [512, 1024, 2048, 4096, 8192], [500.0, 1000.0, 2000.0, 4000.0]
+for label, o in (("baseline algorithm", {}), ("Min-KS + seeded keys + OTF plaintexts", ALL)):
+    OUT.append(f"\n**{label}** (MAC lanes = 2 x NTT butterflies; cells: latency, verdict)\n")
+    rows = []
+    for n in ntts:
+        cells = [f"{n}"]
+        for bw in hbms:
+            r = run(hw=HW.with_(ntt_bfly_per_cycle=n, mac_lanes=2 * n, hbm_gbps=bw), **o)
+            cells.append(f"{1e3 * r['per_bootstrap_s']:.1f} ms, {r['bound'].split(' ')[0]}")
+        rows.append(cells)
+    table(["NTT bfly/cycle \\ HBM GB/s"] + [f"{b:.0f}" for b in hbms], rows)
+
+# 8 ── power ─────────────────────────────────────────────────────────────
+h("8. Power and energy")
+rows = []
+for name, hw, o, dv in [("ARK-class, baseline", HW, {}, False), ("ARK-class, baseline, DVFS", HW, {}, True),
+                        ("ARK-class, all techniques", HW, ALL, False),
+                        ("2x NTT + MAC, all techniques", HW.with_(ntt_bfly_per_cycle=8192, mac_lanes=16384), ALL, False),
+                        ("4x NTT + MAC, all techniques", HW.with_(ntt_bfly_per_cycle=16384, mac_lanes=32768), ALL, False),
+                        ("4x, TDP not enforced", HW.with_(ntt_bfly_per_cycle=16384, mac_lanes=32768, enforce_tdp=False), ALL, False)]:
+    r = run(hw=hw, dvfs=dv, **o)
+    e = r["energy"]
+    rows.append([name, ms(r["per_bootstrap_s"]), f"{100 * r['clock']:.0f}%", f"{e['avg_power_W']:.0f}",
+                 f"{e['peak_power_W']:.0f}", f"{1e3 * e['per_bootstrap_J']:.0f}",
+                 f"{100 * e['breakdown']['static']:.0f}% / {100 * e['breakdown']['hbm']:.0f}%", r["bound"]])
+table(["configuration", "bootstrap", "clock", "avg W", "peak W", "mJ / bootstrap", "static / HBM energy", "verdict"], rows)
+OUT.append(f"\nTDP 250 W in every row; worst-case power of the 4x design at full clock: "
+           f"{HW.with_(ntt_bfly_per_cycle=16384, mac_lanes=32768).peak_power(1.0):.0f} W")
+
+# 9 ── optics ────────────────────────────────────────────────────────────
+h("9. Optical NTT engine: the precision tax")
+rows = []
+for q in (50, 36, 28):
+    for blk in (16, 256, 4096):
+        for e in (8, 12, 16, 20):
+            eng = OpticalEngine(block=blk, enob=e)
+            try:
+                b, d = eng.digits(q)
+                dac, adc = eng.planes(q)
+                rows.append([q, blk, e, b, d, (dac + adc) * 2, f"{(blk.bit_length() - 1) / 2:.1f}"])
+            except ValueError:
+                rows.append([q, blk, e, "-", "infeasible", "-", f"{(blk.bit_length() - 1) / 2:.1f}"])
+table(["limb bits", "block", "ENOB", "digit bits b", "digits d", "conversions per point",
+       "butterflies per point offloaded"], rows)
+
+h("10. Optical NTT engine in the full system (ark set, baseline algorithm)")
+ideal = OpticalEngine(block=4096, enob=8, samples_per_s=5e11, ideal=True)
+cases = [("small digital, no optics", SMALL, None),
+         ("+ realistic engine (block 16, ENOB 12)", SMALL.with_(tdp_w=300.0), OpticalEngine(samples_per_s=5e11)),
+         ("+ realistic engine, ENOB 16, 36-bit limbs*", SMALL.with_(tdp_w=300.0),
+          OpticalEngine(enob=16, samples_per_s=5e10)),
+         ("+ ideal engine (exact at any precision, block 4096)", SMALL.with_(tdp_w=300.0), ideal),
+         ("+ ideal engine, 4x converter rate", SMALL.with_(tdp_w=400.0), replace(ideal, samples_per_s=2e12)),
+         ("ARK-class (memory-bound), no optics", HW, None),
+         ("ARK-class + ideal engine", HW.with_(tdp_w=350.0), ideal)]
+rows = []
+for name, hw, eng in cases:
+    p = ARK.with_(q_bits=36) if "36-bit" in name else ARK
+    r = run(p=p, hw=hw.with_(optical=eng) if eng else hw)
+    e = r["energy"]
+    rows.append([name, ms(r["per_bootstrap_s"]), f"{1e3 * e['per_bootstrap_J']:.0f}",
+                 f"{e['dac_samples'] + e['adc_samples']:.3g}", f"{100 * r['utilisation']['optical']:.0f}%", r["bound"]])
+table(["design", "bootstrap", "mJ", "conversions", "optical busy", "verdict"], rows)
+OUT.append("\n*36-bit limbs (SHARP's word size) with the same level structure: illustrative only. At ENOB 16 a "
+           "conversion costs ~2 nJ (Walden), so the converter rate is cut to 5e10 samples/s to fit the 300 W TDP; "
+           "at 5e11 the converters alone would need ~1 kW.")
+
+OUT.append("\n**Break-even converter energy for the ideal engine (energy per bootstrap equal to the small digital design)**\n")
+base_e = run(hw=SMALL)["energy"]["per_bootstrap_J"]
+rows = []
+for laser in (20.0, 5.0, 0.0):
+    lo, hi = 0.0, 10000.0
+    for _ in range(50):
+        mid = (lo + hi) / 2
+        eng = replace(ideal, fom_dac_fj=mid, fom_adc_fj=mid, laser_w=laser / 2, tuning_w=laser / 2)
+        if run(hw=SMALL.with_(enforce_tdp=False, optical=eng))["energy"]["per_bootstrap_J"] < base_e:
+            lo = mid
+        else:
+            hi = mid
+    if lo > 9999:
+        lo = float("inf")
+    rows.append([f"{laser:.0f} W", f"{lo:.1f} fJ/step" if 0 < lo < 1e9 else ("always" if lo > 0 else "never"),
+                 f"{lo * 2 ** 8 * 1e-3:.1f} pJ/sample" if 0 < lo < 1e9 else "-"])
+table(["laser + tuning static", "break-even Walden FoM (DAC = ADC, ENOB 8)", "= energy per conversion"], rows)
+OUT.append("\nEnergy question only: the TDP is not enforced in this search, so the clock stays at 100%.")
+
+# 11 ── design sweep ─────────────────────────────────────────────────────
+h("11. Design-space sweep and Pareto front (all techniques)")
+grid = {"ntt_bfly_per_cycle": [1024, 2048, 4096, 8192], "sram_mib": [256, 512, 1024], "hbm_gbps": [500.0, 1000.0, 2000.0]}
+t0 = time.perf_counter()
+rows = design_sweep(ARK, HW, grid, BootOptions(**ALL), workers=8)
+sweep_s = time.perf_counter() - t0
+front = pareto(rows)
+table(["NTT bfly/cycle", "SRAM MiB", "HBM GB/s", "bootstrap", "mJ", "verdict"],
+      [[r["ntt_bfly_per_cycle"], r["sram_mib"], f"{r['hbm_gbps']:.0f}", ms(r["latency_s"]),
+        f"{1e3 * r['energy_J']:.0f}", r["bound"]] for r in front])
+OUT.append(f"\n{len(rows)} design points simulated in {sweep_s:.1f} s on 8 processes; {len(front)} are Pareto-optimal.")
+
+# 12 ── calibration and speed ────────────────────────────────────────────
+h("12. Calibration against OpenFHE (this machine) and simulator speed")
+out = subprocess.run(["python", str(Path(__file__).parent / "calibrate_openfhe.py")], capture_output=True, text=True)
+OUT.append("```\n" + out.stdout.strip() + "\n```")
+t = bootstrap_trace(ARK)
+reps = 10
+t0 = time.perf_counter()
+for _ in range(reps):
+    simulate(t, HW)
+py = (time.perf_counter() - t0) / reps
+node = shutil.which("node")
+js = None
+if node:
+    eng = Path(__file__).parent.parent / "web" / "sim_engine.js"
+    script = (f"require({json.dumps(str(eng))});const F=globalThis.FheSim;const p=F.mkParams(F.PARAMS.ark),"
+              "hw=F.ACCELERATORS.ark(),t=F.bootstrapTrace(p,{});F.simulate(t,hw);const t0=Date.now();"
+              "for(let i=0;i<20;i++)F.simulate(t,hw);console.log((Date.now()-t0)/20/1e3);")
+    js = float(subprocess.run([node, "-e", script], capture_output=True, text=True).stdout)
+OUT.append(f"\nOne ARK-set bootstrap ({len(t.ops)} HE ops, "
+           f"{sum(len(o.kernels) for o in t.ops)} kernels): Python/SimPy {1e3 * py:.0f} ms"
+           + (f", JavaScript (node) {1e3 * js:.0f} ms" if js else "") + " of wall-clock time.")
+
+# 13 ── dnum trade-off ───────────────────────────────────────────────────
+h("13. The dnum trade-off (N = 2^16, L = 23, top level; log PQ uses 50-bit scaling and 60-bit special primes)")
+rows = []
+for dn in (1, 2, 3, 4, 6, 8, 12, 24):
+    p = ARK.with_(dnum=dn)
+    hr = summarise_trace(he_op_trace(p, "hrot"))["hrot"]
+    rows.append([dn, p.alpha, p.log_pq(), f"{p.evk_bytes() / 2**20:.0f}", hr["ntt_limbs"] + hr["intt_limbs"],
+                 f"{hr['bconv'] / 1e6:.0f} M", f"{1e6 * simulate(he_op_trace(p, 'hrot'), HW).horizon:.0f} us"])
+table(["dnum", "alpha = k", "log PQ", "evk MiB", "NTT+iNTT limbs per HRot", "BConv mul-adds", "HRot on ARK-class"], rows)
+
+# 14 ── functional precision check ───────────────────────────────────────
+h("14. Functional check of the exact-rounding rule (q = 12289, 14-bit limbs, 16-point block)")
+import random  # noqa: E402
+from fhe_sim.precision import bits_needed, find_psi, ntt_reference, optical_block_ntt  # noqa: E402
+q, n = 12289, 16
+w = pow(find_psi(q, 2 * n), 2, q)
+rng = random.Random(1)
+x = [rng.randrange(q) for _ in range(n)]
+rows = []
+for b in (1, 2, 3):
+    d = -(-14 // b)
+    e = bits_needed(n, b, d)
+    for enob in (e, e - 1, e - 3):
+        y, worst = optical_block_ntt(x, q, 14, b, enob)
+        rows.append([b, d, e, enob, f"{worst:.3f}", "exact" if y == ntt_reference(x, q, w) else "wrong"])
+table(["digit bits b", "digits d", "predicted ENOB", "ENOB used", "worst analogue error", "result"], rows)
+
+# 15 ── converter energy ─────────────────────────────────────────────────
+h("15. Converter energy per sample (Walden FoM: DAC 10 fJ/step, ADC 20 fJ/step)")
+rows = []
+for e in (6, 8, 10, 12, 14, 16, 20):
+    eng = OpticalEngine(enob=e)
+    rows.append([e, f"{eng.pj_dac():.2f}", f"{eng.pj_adc():.2f}", f"{eng.pj_dac() + eng.pj_adc():.1f}"])
+table(["ENOB", "DAC pJ/sample", "ADC pJ/sample", "DAC + ADC pJ"], rows)
+
+text = "# Results (generated by examples/results.py)\n\nAll hardware coefficients are illustrative.\n" + "\n".join(OUT) + "\n"
+(Path(__file__).parent / "results.md").write_text(text)
+print(text)
