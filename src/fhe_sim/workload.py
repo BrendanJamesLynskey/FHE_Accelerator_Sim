@@ -72,6 +72,8 @@ class BootOptions:
     min_ks: bool = False            # one key per BSGS loop, rotations applied iteratively (ARK "Min-KS")
     seeded_keys: bool = False       # evk "a" halves regenerated on chip from a PRNG seed
     otf_plaintexts: bool = False    # DFT diagonals generated on chip instead of loaded (ARK "OF-Limb" spirit)
+    stc_first: bool = False         # SlotToCoeff before ModRaise, at the bottom of the modulus chain
+                                    # (OpenFHE's BTSlotsEncoding); one EvalMod for real-valued data
     lazy_moddown: bool = False      # OpenFHE's BSGS (found by replaying its trace): rotations stay in the
                                     # Q*P basis, one ModDown per DFT level, and many more (now NTT-free)
                                     # baby steps than giant steps
@@ -351,6 +353,8 @@ class Builder:
         return y
 
     def bootstrap(self, x: str) -> str:
+        if self.o.stc_first:
+            return self.bootstrap_stc_first(x)
         p = self.p
         self.stage = "modraise"
         x = self.modraise(x)
@@ -371,6 +375,30 @@ class Builder:
         return x
 
 
+    def bootstrap_stc_first(self, x: str) -> str:
+        """SlotToCoeff first, on the nearly exhausted input (few limbs: cheap keys and plaintexts),
+        then ModRaise, CoeffToSlot and EvalMod; the result is already in slots. With real-valued
+        data the conjugate split needs only one EvalMod. The input must hold stc_levels levels,
+        and the output keeps them: L - cts_levels - EvalMod levels."""
+        p = self.p
+        if self.levels[x] < p.stc_levels:
+            raise ValueError(f"StC-first needs the input at level >= {p.stc_levels}")
+        self.stage = "stc"
+        x = self.dft(x, "stc", p.stc_levels)
+        if not p.full_slots:                                  # replicate the sparse slots
+            x = self.add([x, self.hrot(x, "stcfirst.rep")])
+        self.stage = "modraise"
+        x = self.modraise(x)
+        self.stage = "cts"
+        x = self.dft(x, "cts", p.cts_levels)
+        x = self.add([x, self.hrot(x, "conj")])              # real part: x + conj(x)
+        self.stage = "evalmod"
+        x = self.evalmod(x)
+        if self.levels[x] < 0:
+            raise ValueError(f"{p.name}: bootstrapping needs more than L = {p.L} levels")
+        return x
+
+
 def dft_split(log_slots: int, n_levels: int) -> list[int]:
     """Radix of each homomorphic-DFT level: log_slots FFT stages merged into n_levels."""
     base, rem = divmod(log_slots, n_levels)
@@ -382,7 +410,7 @@ def bootstrap_trace(p: CKKSParams, opts: BootOptions | None = None) -> Trace:
     b = Builder(p, opts)
     for i in range(opts.n_boot):
         b.boot = i
-        b.bootstrap(b.external_ct(0))
+        b.bootstrap(b.external_ct(p.stc_levels if opts.stc_first else 0))
     return Trace(p, b.ops, b.sizes, b.external, opts, b.levels)
 
 

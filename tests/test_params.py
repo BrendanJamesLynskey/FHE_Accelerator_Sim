@@ -153,3 +153,28 @@ def test_trace_json_round_trip(tmp_path):
     assert summarise_trace(back) == summarise_trace(t)
     assert [o.inputs for o in back.ops] == [o.inputs for o in t.ops]
     assert back.levels == t.levels
+
+
+@pytest.mark.parametrize("name", ["ark", "lattigo", "small", "openfhe-sparse", "openfhe-full14"])
+def test_stc_first_counts_and_levels(name):
+    """StC-first: the same SlotToCoeff, run first on the nearly exhausted input; one EvalMod
+    (real-valued data); the StC levels are no longer taken from the top of the chain."""
+    p = PARAMS[name]
+    conv = bootstrap_trace(p)
+    first = bootstrap_trace(p, BootOptions(stc_first=True))
+    sc, sf = summarise_trace(conv), summarise_trace(first)
+    assert sf["stc"]["hrot"] == sc["stc"]["hrot"] + (0 if p.full_slots else 1)
+    assert sf["stc"]["pmult"] == sc["stc"]["pmult"]
+    assert sf["stc"]["key_bytes"] <= sc["stc"]["key_bytes"]         # never more limbs per key
+    copies = 2 if p.full_slots else 1
+    assert sf["evalmod"]["hmult"] * copies == sc["evalmod"]["hmult"]
+    assert output_level(first) == output_level(conv) + p.stc_levels
+    assert first.levels[first.external[0]] == p.stc_levels
+
+
+def test_stc_first_needs_input_levels():
+    from fhe_sim.workload import Builder
+    b = Builder(ARK, BootOptions(stc_first=True))
+    with pytest.raises(ValueError):
+        b.bootstrap(b.external_ct(0))
+

@@ -160,8 +160,8 @@
                 const k = split[j], d = Math.min(2 ** (k + 1) - 1, 2 ** p.slotsLog), tag = `${prefix}${j}`;
                 const lazy = o.lazyModdown && o.hoisting && !o.minKs;
                 let n1;
-                if (lazy && d === p.slots) {
-                    const sl = p.slots, c = Math.floor(Math.sqrt(sl - 1)) + 1;     // ceil(sqrt(slots)), exact for these sizes
+                if (lazy && d === 2 ** p.slotsLog) {
+                    const sl = 2 ** p.slotsLog, c = Math.floor(Math.sqrt(sl - 1)) + 1;     // ceil(sqrt(slots)), exact for these sizes
                     n1 = sl > 1 ? Math.min(2 ** (c.toString(2).length - 1 + 1), d) : 1;
                 } else if (lazy) n1 = Math.min(2 ** (Math.floor(k / 2) + 1 + (d > 7 ? 1 : 0)), d);
                 else n1 = Math.min(2 ** cdiv(k + 1, 2), d);
@@ -217,7 +217,19 @@
             for (let r = 0; r < p.doubleAngle; r++) y = B.hmult(y, y);
             return y;
         };
+        B.bootstrapStcFirst = x => {
+            if (B.levels[x] < p.stcLevels) throw new Error(`StC-first needs the input at level >= ${p.stcLevels}`);
+            B.stage = 'stc'; x = B.dft(x, 'stc', p.stcLevels);
+            if (!p.fullSlots) x = B.add([x, B.hrot(x, 'stcfirst.rep')]);
+            B.stage = 'modraise'; x = B.modraise(x);
+            B.stage = 'cts'; x = B.dft(x, 'cts', p.ctsLevels);
+            x = B.add([x, B.hrot(x, 'conj')]);
+            B.stage = 'evalmod'; x = B.evalmod(x);
+            if (B.levels[x] < 0) throw new Error(`${p.name}: bootstrapping needs more than L = ${p.L} levels`);
+            return x;
+        };
         B.bootstrap = x => {
+            if (o.stcFirst) return B.bootstrapStcFirst(x);
             B.stage = 'modraise'; x = B.modraise(x);
             B.stage = 'cts'; x = B.dft(x, 'cts', p.ctsLevels);
             const c = B.hrot(x, 'conj');
@@ -231,11 +243,11 @@
         return B;
     }
     function bootOptions(o) {
-        return Object.assign({ nBoot: 1, hoisting: true, minKs: false, seededKeys: false, otfPlaintexts: false, lazyModdown: false }, o || {});
+        return Object.assign({ nBoot: 1, hoisting: true, minKs: false, seededKeys: false, otfPlaintexts: false, lazyModdown: false, stcFirst: false }, o || {});
     }
     function bootstrapTrace(p, opts) {
         const o = bootOptions(opts), B = Builder(p, o);
-        for (let i = 0; i < o.nBoot; i++) { B.boot = i; B.bootstrap(B.externalCt(0)); }
+        for (let i = 0; i < o.nBoot; i++) { B.boot = i; B.bootstrap(B.externalCt(o.stcFirst ? p.stcLevels : 0)); }
         return { params: p, ops: B.ops, sizes: B.sizes, external: B.external, levels: B.levels, options: o };
     }
     function heOpTrace(p, op, level, n) {
@@ -700,7 +712,7 @@
     }
 
     // ── convenience for the parity test and the deck ─────────────────
-    const camel = o => { const m = { n_boot: 'nBoot', min_ks: 'minKs', seeded_keys: 'seededKeys', otf_plaintexts: 'otfPlaintexts', lazy_moddown: 'lazyModdown' }, out = {};
+    const camel = o => { const m = { n_boot: 'nBoot', min_ks: 'minKs', seeded_keys: 'seededKeys', otf_plaintexts: 'otfPlaintexts', lazy_moddown: 'lazyModdown', stc_first: 'stcFirst' }, out = {};
         for (const [k, v] of Object.entries(o || {})) out[m[k] || k] = v; return out; };
     function simulateNamed(paramsName, hwName, opts, dvfs, hwOver) {
         const p = mkParams(PARAMS[paramsName]);

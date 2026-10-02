@@ -248,7 +248,7 @@ index a33e422..4932f69 100644
      auto result = std::make_shared<std::vector<DCRTPoly>>();
      result->reserve(2);
 diff --git a/src/pke/lib/scheme/ckksrns/ckksrns-fhe.cpp b/src/pke/lib/scheme/ckksrns/ckksrns-fhe.cpp
-index 96c2363..ca7e775 100644
+index 96c2363..50de0bb 100644
 --- a/src/pke/lib/scheme/ckksrns/ckksrns-fhe.cpp
 +++ b/src/pke/lib/scheme/ckksrns/ckksrns-fhe.cpp
 @@ -29,6 +29,7 @@
@@ -320,7 +320,39 @@ index 96c2363..ca7e775 100644
          cc->EvalAddInPlaceNoCheck(ctxtDec, cc->EvalRotate(ctxtDec, slots));
      }
  
-@@ -2722,6 +2733,7 @@ Plaintext FHECKKSRNS::MakeAuxPlaintext(const CryptoContextImpl<DCRTPoly>& cc, co
+@@ -838,6 +849,7 @@ Ciphertext<DCRTPoly> FHECKKSRNS::EvalBootstrap(ConstCiphertext<DCRTPoly>& cipher
+ 
+ Ciphertext<DCRTPoly> FHECKKSRNS::EvalBootstrapStCFirst(ConstCiphertext<DCRTPoly>& ciphertext, uint32_t numIterations,
+                                                        uint32_t precision) const {
++    fhetrace::emit("S stc");
+     const auto cryptoParams = std::dynamic_pointer_cast<CryptoParametersCKKSRNS>(ciphertext->GetCryptoParameters());
+ 
+     if (cryptoParams->GetKeySwitchTechnique() != HYBRID)
+@@ -1039,6 +1051,7 @@ Ciphertext<DCRTPoly> FHECKKSRNS::EvalBootstrapStCFirst(ConstCiphertext<DCRTPoly>
+     // Linear transform for decoding
+     ctxtDepleted =
+         (isLTBootstrap) ? EvalLinearTransform(p.m_U0Pre, ctxtDepleted) : EvalSlotsToCoeffs(p.m_U0PreFFT, ctxtDepleted);
++    fhetrace::emit("S modraise");
+ 
+     if (slots != N / 2 && cc->GetCKKSDataType() == REAL) {
+         //------------------------------------------------------------------------------
+@@ -1137,6 +1150,7 @@ Ciphertext<DCRTPoly> FHECKKSRNS::EvalBootstrapStCFirst(ConstCiphertext<DCRTPoly>
+ 
+     algo->ModReduceInternalInPlace(raised, compositeDegree);
+ 
++    fhetrace::emit("S cts");
+     ctxtEnc =
+         (isLTBootstrap) ? EvalLinearTransform(p.m_U0hatTPre, raised) : EvalCoeffsToSlots(p.m_U0hatTPreFFT, raised);
+ 
+@@ -1176,6 +1190,7 @@ Ciphertext<DCRTPoly> FHECKKSRNS::EvalBootstrapStCFirst(ConstCiphertext<DCRTPoly>
+     //------------------------------------------------------------------------------
+ 
+     // Evaluate Chebyshev series for the sine wave
++    fhetrace::emit("S evalmod");
+     ctxtEnc = algo->EvalChebyshevSeries(ctxtEnc, coefficients, coeffLowerBound, coeffUpperBound);
+     // AA: Note that for sparse complex, we currently evaluate the polynomial over two ciphertexts.
+     // This can be optimized to a single ciphertext (without additional consumed levels) if the last
+@@ -2722,6 +2737,7 @@ Plaintext FHECKKSRNS::MakeAuxPlaintext(const CryptoContextImpl<DCRTPoly>& cc, co
  
  Ciphertext<DCRTPoly> FHECKKSRNS::EvalMultExt(ConstCiphertext<DCRTPoly> ciphertext, ConstPlaintext plaintext) {
      auto pt = plaintext->GetElement<DCRTPoly>();

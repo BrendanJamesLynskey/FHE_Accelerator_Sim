@@ -41,6 +41,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--min-ks", action="store_true", help="one key per BSGS loop (ARK Min-KS)")
     p.add_argument("--seeded-keys", action="store_true", help="regenerate evk 'a' halves on chip")
     p.add_argument("--otf-pt", action="store_true", help="generate DFT plaintexts on chip")
+    p.add_argument("--stc-first", action="store_true",
+                   help="SlotToCoeff first, at the bottom of the modulus chain (OpenFHE's BTSlotsEncoding)")
     p.add_argument("--lazy-moddown", action="store_true",
                    help="OpenFHE's BSGS: rotations stay in Q*P, one ModDown per DFT level")
     p.add_argument("--sram", type=int, metavar="MiB")
@@ -95,7 +97,8 @@ def main(argv=None) -> None:
     hw = hardware_from_args(a)
     params = PARAMS[a.params]
     opts = BootOptions(n_boot=a.n_boot, hoisting=not a.no_hoist, min_ks=a.min_ks,
-                       seeded_keys=a.seeded_keys, otf_plaintexts=a.otf_pt, lazy_moddown=a.lazy_moddown)
+                       seeded_keys=a.seeded_keys, otf_plaintexts=a.otf_pt, lazy_moddown=a.lazy_moddown,
+                       stc_first=a.stc_first)
     if a.heir:
         from .heir_frontend import compile_ir
         prog = compile_ir(a.heir, opts)

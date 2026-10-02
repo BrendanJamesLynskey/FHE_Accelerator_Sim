@@ -1,13 +1,18 @@
 # Real OpenFHE kernel traces
 
 Two CKKS bootstraps recorded from **OpenFHE v1.5.1**. The library was
-instrumented with a small tracer (`openfhe_fhetrace.patch`, 78 added lines in 6
+instrumented with a small tracer (`openfhe_fhetrace.patch`, 82 added lines in 6
 files), and each bootstrap ran single-threaded.
 
 | File | Configuration | Events | Result |
 |------|---------------|--------|--------|
 | `full14.log.gz` | N = 2^14, 8,192 slots, level budget {3, 3}, dnum 3, 30 levels (not a 128-bit set) | 27,666 | decrypts to max error 1.6e-4 |
 | `sparse16.log.gz` | N = 2^16, 8 slots, level budget {1, 1}, dnum 3, 18 levels, 128-bit classic: the timing-calibration configuration | 9,035 | decrypts to max error 1.2e-5 |
+
+`full14_stcfirst.log.gz` and `sparse16_stcfirst.log.gz` record the same configurations
+with SlotToCoeff first (`EvalBootstrapSetup(…, BTSlotsEncoding=true)`), starting from an
+input with SlotToCoeff budget + 2 towers (5 and 3). They decrypt to max error 7.3e-6 and
+1.5e-5.
 
 Full-slot N = 2^16 was not recorded. OpenFHE's keys and precomputed plaintexts
 for it exceed the memory available on the 15 GB recording machine.
@@ -38,6 +43,7 @@ make -j4 && make install                     # about 2 minutes on an i7-3770
 mkdir bt && cd bt && cmake <this directory> -DCMAKE_PREFIX_PATH=<install> && make
 FHETRACE=full14.log OMP_NUM_THREADS=1 ./boot_trace 14 13 3 3 3 10 0
 FHETRACE=sparse16.log OMP_NUM_THREADS=1 ./boot_trace 16 3 1 1 3 2 1
+FHETRACE=full14_stcfirst.log OMP_NUM_THREADS=1 ./boot_trace 14 13 3 3 3 10 0 1   # SlotToCoeff first
 ```
 
 Run single-threaded: each shared library writes through its own unbuffered

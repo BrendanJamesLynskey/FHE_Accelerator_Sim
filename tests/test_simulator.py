@@ -338,6 +338,8 @@ def js_cases():
         ("ark", "ark", dict(), dict(hbm_gbps=4000.0, tdp_w=150.0)),
         ("ark", "small", dict(lazy_moddown=True), {}),
         ("openfhe-full14", "ark", dict(lazy_moddown=True, otf_plaintexts=True), {}),
+        ("ark", "ark", dict(stc_first=True), {}),
+        ("openfhe-sparse", "small", dict(stc_first=True, lazy_moddown=True), {}),
     ]
 
 
@@ -368,7 +370,7 @@ def test_javascript_port_matches_python():
     out = subprocess.run([node, "-e", script], input=json.dumps(payload), capture_output=True,
                          text=True, check=True)
     got = json.loads(out.stdout)
-    assert len(got) == len(expect) == 26
+    assert len(got) == len(expect) == 30
     for e, g, c in zip(expect, got, payload):
         assert g["horizon"] == e["horizon"], c                    # bit-identical: no transcendentals
         assert g["end"] == e["end"], c

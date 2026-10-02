@@ -1,6 +1,6 @@
 // Records the kernel stream of one OpenFHE CKKS bootstrap, using the fhetrace instrumentation
 // (see openfhe_fhetrace.patch). Usage:
-//   FHETRACE=out.log OMP_NUM_THREADS=1 ./boot_trace <logN> <log2 slots> <lb_enc> <lb_dec> <dnum> <levels_after> <secure 0|1>
+//   FHETRACE=out.log OMP_NUM_THREADS=1 ./boot_trace <logN> <log2 slots> <lb_enc> <lb_dec> <dnum> <levels_after> <secure 0|1> [stc_first 0|1]
 #include <cmath>
 #include <cstdlib>
 #include <iostream>
@@ -11,7 +11,8 @@
 using namespace lbcrypto;
 
 int main(int argc, char** argv) {
-    if (argc != 8) { std::cerr << "usage: boot_trace logN logSlots lbEnc lbDec dnum levelsAfter secure\n"; return 2; }
+    if (argc != 8 && argc != 9) { std::cerr << "usage: boot_trace logN logSlots lbEnc lbDec dnum levelsAfter secure [stcFirst]\n"; return 2; }
+    bool stcFirst = argc == 9 && std::atoi(argv[8]) != 0;
     uint32_t logN = std::atoi(argv[1]), logSlots = std::atoi(argv[2]);
     std::vector<uint32_t> lb = {(uint32_t)std::atoi(argv[3]), (uint32_t)std::atoi(argv[4])};
     uint32_t dnum = std::atoi(argv[5]), after = std::atoi(argv[6]);
@@ -34,14 +35,16 @@ int main(int argc, char** argv) {
     p.SetBatchSize(slots);
     auto cc = GenCryptoContext(p);
     for (auto f : {PKE, KEYSWITCH, LEVELEDSHE, ADVANCEDSHE, FHE}) cc->Enable(f);
-    cc->EvalBootstrapSetup(lb, {0, 0}, slots);
+    cc->EvalBootstrapSetup(lb, {0, 0}, slots, 0, true, stcFirst);   // BTSlotsEncoding: SlotToCoeff first
     auto keys = cc->KeyGen();
     cc->EvalMultKeyGen(keys.secretKey);
     cc->EvalBootstrapKeyGen(keys.secretKey, slots);
 
     std::vector<double> x(slots);
     for (uint32_t i = 0; i < slots; ++i) x[i] = 0.25 * ((int)(i % 7) - 3) / 3.0;
-    auto pt = cc->MakeCKKSPackedPlaintext(x, 1, depth - 1, nullptr, slots);
+    // Start almost exhausted. Conventional order: 2 towers left. StC-first: SlotToCoeff runs first,
+    // so the input keeps lb_dec + 2 towers (OpenFHE's expected level for EvalBootstrapStCFirst).
+    auto pt = cc->MakeCKKSPackedPlaintext(x, 1, stcFirst ? depth + 1 - (lb[1] + 2) : depth - 1, nullptr, slots);
     auto ct = cc->Encrypt(keys.publicKey, pt);
 
     auto cp = std::dynamic_pointer_cast<CryptoParametersCKKSRNS>(cc->GetCryptoParameters());

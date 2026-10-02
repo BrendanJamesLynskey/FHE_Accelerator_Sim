@@ -53,9 +53,11 @@ analytic lower bound 10.01 ms
 | baseline (hoisted BSGS) | 13.94 ms | 6.74 | 12.44 | 1139 | memory-bound |
 | no hoisting | 14.02 ms | 6.74 | 12.44 | 1162 | memory-bound |
 | OpenFHE's BSGS (lazy ModDown) | 19.77 ms | 8.60 | 17.50 | 1511 | memory-bound |
+| SlotToCoeff first | 11.51 ms | 5.73 | 10.63 | 928 | memory-bound |
 | + Min-KS | 8.51 ms | 1.15 | 5.24 | 726 | memory-bound |
 | + Min-KS + seeded keys | 8.86 ms | 0.58 | 4.62 | 738 | MAC-bound |
 | + Min-KS + seeded keys + OTF plaintexts | 7.19 ms | 0.58 | 0.78 | 607 | MAC-bound |
+| + all three + SlotToCoeff first | 5.42 ms | 0.50 | 0.72 | 456 | MAC-bound |
 
 **small digital (NTT-starved)**
 
@@ -64,9 +66,11 @@ analytic lower bound 10.01 ms
 | baseline (hoisted BSGS) | 17.46 ms | 6.74 | 12.44 | 1280 | NTT-bound |
 | no hoisting | 20.14 ms | 6.74 | 12.44 | 1407 | NTT-bound |
 | OpenFHE's BSGS (lazy ModDown) | 18.99 ms | 8.60 | 17.50 | 1479 | NTT-bound |
+| SlotToCoeff first | 12.74 ms | 5.73 | 10.63 | 977 | NTT-bound |
 | + Min-KS | 21.54 ms | 1.15 | 5.24 | 1247 | NTT-bound |
 | + Min-KS + seeded keys | 22.07 ms | 0.58 | 4.62 | 1266 | NTT-bound |
 | + Min-KS + seeded keys + OTF plaintexts | 26.65 ms | 0.58 | 0.78 | 1385 | NTT-bound |
+| + all three + SlotToCoeff first | 20.01 ms | 0.50 | 0.72 | 1039 | NTT-bound |
 
 ## 6. Scratchpad size against traffic (ARK-class design)
 
@@ -231,7 +235,7 @@ Sparse bootstrap (predicted)               12112.7ms    8473.3ms     -30%
 Same bootstrap, OpenFHE trace replayed     12112.7ms   10758.6ms     -11%
 ```
 
-One ARK-set bootstrap (203 HE ops, 1153 kernels): Python/SimPy 74 ms, JavaScript (node) 13 ms of wall-clock time.
+One ARK-set bootstrap (203 HE ops, 1153 kernels): Python/SimPy 73 ms, JavaScript (node) 12 ms of wall-clock time.
 
 ## 13. The dnum trade-off (N = 2^16, L = 23, top level; log PQ uses 50-bit scaling and 60-bit special primes)
 
@@ -333,3 +337,23 @@ Sparse bootstrap on the CPU-like model: measured 12.11 s; scheme model 8.48 s (-
 front-end note: eval_chebyshev degree 5: model schedule ends at level 0, HEIR's at 1; HEIR's level kept
 
 front-end note: bootstrap: model output level 30, HEIR's type says 1; limbs dropped
+
+## 19. SlotToCoeff-first against the conventional order (ark set)
+
+| design | order | bootstrap | levels left | per useful level | HMults | NTT + iNTT limbs | key GB | mJ | verdict |
+|---|---|---|---|---|---|---|---|---|---|
+| ARK-class | conventional | 13.94 ms | 7 | 1.99 ms | 36 | 13,710 | 6.74 | 1139 | memory-bound |
+| ARK-class | SlotToCoeff first | 11.51 ms | 10 | 1.15 ms | 18 | 9,544 | 5.73 | 928 | memory-bound |
+| ARK-class | all three | 7.19 ms | 7 | 1.03 ms | 36 | 22,611 | 0.58 | 607 | MAC-bound |
+| ARK-class | all three + SlotToCoeff first | 5.42 ms | 10 | 0.54 ms | 18 | 16,708 | 0.50 | 456 | MAC-bound |
+| small digital | conventional | 17.46 ms | 7 | 2.49 ms | 36 | 13,710 | 6.74 | 1280 | NTT-bound |
+| small digital | SlotToCoeff first | 12.74 ms | 10 | 1.27 ms | 18 | 9,544 | 5.73 | 977 | NTT-bound |
+| small digital | all three | 26.65 ms | 7 | 3.81 ms | 36 | 22,611 | 0.58 | 1385 | NTT-bound |
+| small digital | all three + SlotToCoeff first | 20.01 ms | 10 | 2.00 ms | 18 | 16,708 | 0.50 | 1039 | NTT-bound |
+
+**OpenFHE v1.5.1, both orders (calibration/openfhe_trace)**
+
+| recording | towers in -> out (conventional) | towers in -> out (StC first) | EvalMod HMults (conv / StC first) | SlotToCoeff key GB (conv / StC first) | NTT + iNTT limbs (conv / StC first) |
+|---|---|---|---|---|---|
+| full14 | 2 -> 12 | 5 -> 15 | 48 / 24 | 0.57 / 0.18 | 23,985 / 13,145 |
+| sparse16 | 2 -> 4 | 3 -> 5 | 24 / 24 | 0.08 / 0.07 | 7,831 / 7,820 |

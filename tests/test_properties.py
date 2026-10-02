@@ -24,7 +24,8 @@ def configs(draw):
                  log_slots=draw(st.sampled_from([None, log_n - 3])))
     opts = BootOptions(n_boot=draw(st.integers(1, 2)), hoisting=draw(st.booleans()),
                        min_ks=draw(st.booleans()), seeded_keys=draw(st.booleans()),
-                       otf_plaintexts=draw(st.booleans()), lazy_moddown=draw(st.booleans()))
+                       otf_plaintexts=draw(st.booleans()), lazy_moddown=draw(st.booleans()),
+                       stc_first=draw(st.booleans()))
     base = ACCELERATORS[draw(st.sampled_from(["ark", "small", "ideal-optical"]))]
     ws = p.ks_working_set() >> 20
     hw = base.with_(window=draw(st.integers(1, 8)),

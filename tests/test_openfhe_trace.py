@@ -109,3 +109,24 @@ def test_openfhes_cpu_tuned_bsgs_costs_a_memory_bound_accelerator():
     mb, ml = summarise(simulate(base, ACCELERATORS["ark"])), summarise(simulate(lazy, ACCELERATORS["ark"]))
     assert ml["hbm_bytes"]["key"] > mb["hbm_bytes"]["key"]
     assert ml["per_bootstrap_s"] > 1.2 * mb["per_bootstrap_s"]
+
+
+FULL_SF = read_log(D / "full14_stcfirst.log.gz")
+SPARSE_SF = read_log(D / "sparse16_stcfirst.log.gz")
+
+
+def test_openfhe_stc_first_matches_the_model_structure():
+    """OpenFHE's EvalBootstrapStCFirst (BTSlotsEncoding): SlotToCoeff runs first on the nearly
+    exhausted input, EvalMod runs once, and the output keeps the SlotToCoeff levels."""
+    for conv, sf, preset in ((FULL, FULL_SF, "openfhe-full14"), (SPARSE, SPARSE_SF, "openfhe-sparse")):
+        assert sf.events[0][0] == "stc"                    # the first kernel belongs to SlotToCoeff
+        o_conv, o_sf = summarise_log(conv), summarise_log(sf)
+        assert o_sf["evalmod"]["hmult"] * (2 if conv is FULL else 1) == o_conv["evalmod"]["hmult"]
+        assert o_sf["stc"]["key_bytes"] < o_conv["stc"]["key_bytes"]
+        p = PARAMS[preset]
+        assert sf.header["out_towers"] - conv.header["out_towers"] == p.stc_levels
+        m = summarise_trace(bootstrap_trace(p, BootOptions(stc_first=True)))
+        assert m["evalmod"]["hmult"] * (2 if conv is FULL else 1) == summarise_trace(bootstrap_trace(p))["evalmod"]["hmult"]
+    lazy = summarise_trace(bootstrap_trace(PARAMS["openfhe-full14"], BootOptions(stc_first=True, lazy_moddown=True)))
+    o = summarise_log(FULL_SF)
+    assert lazy["stc"]["key_bytes"] == pytest.approx(o["stc"]["key_bytes"], rel=0.05)

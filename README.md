@@ -5,7 +5,9 @@ A [SimPy](https://simpy.readthedocs.io/) discrete-event simulator of an
 datapath and an optional **hybrid electro-optical transform engine**. It is the
 companion code for the
 [FHE Accelerator Simulators](https://github.com/BrendanJamesLynskey/FHE_Hub_Accelerator_Simulators)
-presentation series.
+presentation series. New to a term (RNS limb, dnum, hoisting, EvalMod, T<sub>A.S.</sub>, SimPy
+resource)? The series [glossary](https://brendanjameslynskey.github.io/FHE_Hub_Accelerator_Simulators/#glossary)
+explains each concept briefly and links to the slides that explain it in depth.
 
 It answers four questions about a design:
 
@@ -27,8 +29,13 @@ separate, and a test ladder runs from hand formulas to a JavaScript twin.
   shared, chunked HBM; a capacity-limited LRU scratchpad where misses become key,
   plaintext or ciphertext traffic and spills become write-backs; dependency-aware
   issue with a window and decoupled key/plaintext prefetch.
-* **Acceleration techniques:** hoisted rotations, Min-KS key reuse (as in ARK), seeded
-  keys and on-the-fly plaintext generation.
+* **Acceleration techniques:**
+  - hoisted rotations;
+  - Min-KS key reuse (as in ARK);
+  - seeded keys;
+  - on-the-fly plaintext generation;
+  - OpenFHE's BSGS split (lazy ModDown);
+  - **SlotToCoeff-first** ordering, which helps every design (see below).
 * **Metrics:** bootstrap latency and per-stage breakdown, utilisation per unit,
   NTT-bound / memory-bound / power-bound attribution, hot-spot per stage, HBM bytes
   by class, Perfetto traces, and an analytic lower bound.
@@ -47,7 +54,7 @@ separate, and a test ladder runs from hand formulas to a JavaScript twin.
   [deck 03](https://brendanjameslynskey.github.io/FHESim_03_Simulating_an_FHE_Accelerator/)
   and matches the Python **bit for bit**.
 * **Real OpenFHE traces:** two bootstraps recorded from OpenFHE v1.5.1, which was
-  instrumented with a 78-line patch to log every NTT, base conversion, key switch,
+  instrumented with an 82-line patch to log every NTT, base conversion, key switch,
   automorphism, rescale and plaintext multiply. The model is checked against them
   stage by stage, and the streams replay on the engine (`fhe-sim --openfhe-log`).
 * **A HEIR front end:** reads the `ckks`-dialect output of the
@@ -83,6 +90,7 @@ fhe-sim --trace boot.json                     # open in https://ui.perfetto.dev
 fhe-sim --dump-trace t.json; fhe-sim --replay t.json
 fhe-sim --openfhe-log calibration/openfhe_trace/sparse16.log.gz --hw cpu   # replay a real OpenFHE bootstrap
 fhe-sim --lazy-moddown                        # OpenFHE's BSGS split: fewer NTTs, more keys
+fhe-sim --stc-first                           # SlotToCoeff before ModRaise: 10 levels left instead of 7
 fhe-sim --heir calibration/heir/lola.ckks.mlir.gz   # LoLa, compiled by HEIR
 
 python examples/results.py                    # regenerate every number in this README and the decks
@@ -136,6 +144,23 @@ power        avg 82 W  peak 176 W (TDP 250 W)  1139.1 mJ/bootstrap  energy: stat
 
 On an NTT-starved design the same techniques make things **worse** (17.46 → 26.65 ms),
 because they trade compute for bandwidth.
+
+**SlotToCoeff first** (`stc_first`, OpenFHE's `BTSlotsEncoding`) runs SlotToCoeff on the
+nearly exhausted input, before ModRaise. Its keys are cheap there, EvalMod runs once
+(real-valued data), and the output keeps 3 more levels. It is the one technique that
+helps every design:
+
+| Design | Order | Bootstrap | Levels left | Per useful level |
+|--------|-------|-----------|-------------|------------------|
+| ARK-class | conventional | 13.94 ms | 7 | 1.99 ms |
+| ARK-class | SlotToCoeff first | 11.51 ms | 10 | 1.15 ms |
+| ARK-class | all three + SlotToCoeff first | 5.42 ms | 10 | 0.54 ms |
+| small digital | conventional | 17.46 ms | 7 | 2.49 ms |
+| small digital | SlotToCoeff first | 12.74 ms | 10 | 1.27 ms |
+
+OpenFHE's own StC-first bootstrap, recorded at N=2^14, shows the same shape: 3 more
+output towers, 24 instead of 48 EvalMod multiplications, and 0.18 instead of 0.57 GB
+of SlotToCoeff keys.
 
 **SRAM against key traffic.** With the baseline algorithm every rotation key is used
 once per bootstrap, so key traffic stays at 6.74 GB from 512 MiB to 4 GiB of SRAM.
@@ -262,7 +287,7 @@ Anything that can emit this can drive the engine:
   with the scheme model's bootstrap, and `kernel.eval_chebyshev` with its Chebyshev evaluation.
   Validated on HEIR v2026.10.01 only; HEIR's dialects change quickly. See `calibration/heir/README.md`.
 * **An instrumented library.** Done for OpenFHE v1.5.1: `calibration/openfhe_trace`
-  holds the 78-line patch, the C++ driver, two recorded bootstraps and build steps.
+  holds the 82-line patch, the C++ driver, two recorded bootstraps and build steps.
   `openfhe_trace.log_to_trace` turns a log into this format. Operations are
   serialised in program order (OpenFHE ran single-threaded), keys and plaintexts
   keep their real identities, and ciphertext identities are not recorded.
