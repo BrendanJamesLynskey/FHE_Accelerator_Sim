@@ -106,6 +106,11 @@ class Accelerator:
     pj_hbm_byte: float = 30.0
     s_min: float = 0.5                 # lowest clock as a fraction of nominal
     enforce_tdp: bool = True
+    # "dynamic": a power manager grants each kernel the highest clock (and each HBM chunk the
+    # highest bandwidth) that fits the TDP headroom left by everything running at that moment.
+    # "worst-case": one fixed clock at which every unit and HBM at full rate fit the TDP.
+    power_mode: str = "dynamic"
+    hbm_min_frac: float = 0.25         # lowest HBM bandwidth the power manager may grant
     optical: OpticalEngine | None = None
 
     def with_(self, **kw) -> "Accelerator":
@@ -158,6 +163,17 @@ class Segment:
     work: float           # butterflies, multiply-adds, words, or converter samples
     dac: float = 0.0
     adc: float = 0.0
+    e_logic: float = 0.0  # the part of energy that scales with clock^2 (time scales with 1/clock)
+    e_sram: float = 0.0   # the part that does not
+    scalable: bool = False
+
+    def at(self, s: float) -> tuple[float, float]:
+        """(time, energy) at clock fraction s, for a segment costed at s = 1."""
+        return self.time / s, self.e_logic * s * s + self.e_sram
+
+    def power(self, s: float) -> float:
+        t, e = self.at(s)
+        return e / t
 
 
 @dataclass
@@ -182,8 +198,9 @@ class CostModel:
         t_logic = work / (hw.rate(unit) * s)
         t_sram = words * 8 / (hw.sram_gbps * 1e9 * s)
         t = t_logic if t_logic >= t_sram else t_sram
-        e = work * hw.pj(unit) * 1e-12 * s * s + words * 8 * hw.pj_sram_byte * 1e-12
-        return Segment(unit, t, e, work)
+        el = work * hw.pj(unit) * 1e-12 * s * s
+        es = words * 8 * hw.pj_sram_byte * 1e-12
+        return Segment(unit, t, el + es, work, e_logic=el, e_sram=es, scalable=True)
 
     def segments(self, k: Kernel) -> list[Segment]:
         unit = KIND_UNIT[k.kind]

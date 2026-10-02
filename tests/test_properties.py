@@ -30,7 +30,9 @@ def configs(draw):
     hw = base.with_(window=draw(st.integers(1, 8)),
                     sram_mib=ws + 1 + draw(st.integers(0, 64)),
                     hbm_gbps=draw(st.sampled_from([200.0, 1000.0, 4000.0])),
-                    hbm_chunk_mib=draw(st.sampled_from([1, 4])))
+                    hbm_chunk_mib=draw(st.sampled_from([1, 4])),
+                    power_mode=draw(st.sampled_from(["dynamic", "worst-case"])),
+                    tdp_w=draw(st.sampled_from([base.tdp_w, base.tdp_w + 100.0])))
     if hw.optical is not None and hw.optical.block > p.N:
         hw = hw.with_(optical=None)
     return p, opts, hw

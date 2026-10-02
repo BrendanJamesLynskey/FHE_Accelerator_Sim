@@ -111,6 +111,9 @@ class Stats:
     stage_first: dict = field(default_factory=dict)
     stage_last: dict = field(default_factory=dict)
     peak_w: float = 0.0
+    power_loss: float = 0.0      # seconds lost to the power manager: slower clocks, throttled HBM, waits
+    clock_time: float = 0.0      # sum of clock x time over compute segments (for the mean clock)
+    compute_time: float = 0.0
 
 
 @dataclass
@@ -129,7 +132,18 @@ class SimResult:
 class Simulation:
     def __init__(self, trace: Trace, cfg: SimConfig, clock: float):
         self.t, self.cfg, self.hw = trace, cfg, cfg.hw
-        self.cost = CostModel(self.hw, trace.params.log_n, trace.params.q_bits, clock)
+        hw = self.hw
+        self.dynamic = hw.enforce_tdp and hw.power_mode == "dynamic"
+        if hw.power_mode not in ("dynamic", "worst-case"):
+            raise ValueError(f"unknown power_mode {hw.power_mode!r}")
+        # dynamic: kernels are costed at full clock and scaled per grant; `clock` is a cap (DVFS)
+        self.cost = CostModel(hw, trace.params.log_n, trace.params.q_bits, 1.0 if self.dynamic else clock)
+        self.cap = clock
+        self.budget = hw.tdp_w - self.cost.static_w
+        if self.dynamic and self.budget <= 0:
+            raise ValueError(f"TDP {hw.tdp_w} W is below static power")
+        self.pwait: list = []        # requests waiting for power headroom (FIFO)
+        self.n_active = 0            # segments and HBM chunks drawing power now
         self.env = simpy.Environment()
         self.units = {u: simpy.Resource(self.env, capacity=1) for u in UNITS}
         self.hbm = simpy.Resource(self.env, capacity=1)
@@ -222,6 +236,57 @@ class Simulation:
         if pl.pt_load:
             yield from self.xfer(pl.pt_load, "pt", o.stage)
 
+    # ── the dynamic power manager ────────────────────────────────────
+    def fit(self, seg) -> float | None:
+        """Highest clock in [s_min, cap] whose power fits the headroom now (None: wait)."""
+        head = self.budget - self.p_now
+        if not seg.scalable:
+            return 1.0 if seg.energy / seg.time <= head else None
+        cap = self.cap
+        if seg.power(cap) <= head:
+            return cap
+        lo = self.hw.s_min if self.hw.s_min < cap else cap
+        if seg.power(lo) > head:
+            return None
+        hi = cap
+        for _ in range(50):
+            mid = (lo + hi) / 2
+            if seg.power(mid) <= head:
+                lo = mid
+            else:
+                hi = mid
+        return lo
+
+    def fit_hbm(self) -> float | None:
+        """Bandwidth fraction in [hbm_min_frac, 1] that fits the headroom now (None: wait)."""
+        head = self.budget - self.p_now
+        if self.hbm_w <= head:
+            return 1.0
+        f = head / self.hbm_w
+        return f if f >= self.hw.hbm_min_frac else None
+
+    def wait_power(self, fit, what: str):
+        t0 = self.env.now
+        while True:
+            x = fit()
+            if x is not None:
+                break
+            if self.n_active == 0:
+                raise ValueError(f"TDP {self.hw.tdp_w} W cannot power {what} even at the lowest setting")
+            ev = self.env.event()
+            self.pwait.append(ev)
+            yield ev
+        self.st.power_loss += self.env.now - t0
+        return x
+
+    def release_power(self, dp: float) -> None:
+        self.power(-dp)
+        self.n_active -= 1
+        if self.pwait:
+            waiting, self.pwait = self.pwait, []
+            for ev in waiting:
+                ev.succeed()
+
     def xfer(self, nbytes: int, cls: str, stage: str):
         bw, left = self.hw.hbm_gbps * 1e9, nbytes
         while left > 0:
@@ -229,6 +294,22 @@ class Simulation:
             req = self.hbm.request()
             yield req
             start = self.env.now
+            if self.dynamic:
+                f = yield from self.wait_power(self.fit_hbm, "HBM")
+                pw = self.hbm_w if f >= 1.0 else self.hbm_w * f
+                dt = sz / bw if f >= 1.0 else sz / (bw * f)
+                self.st.power_loss += dt - sz / bw
+                self.n_active += 1
+                self.power(pw)
+                yield self.env.timeout(dt)
+                self.release_power(pw)
+                self.hbm.release(req)
+                self.st.busy["hbm"] += dt
+                self.st.energy["hbm"] += sz * self.hw.pj_hbm_byte * 1e-12
+                self.stage_busy(stage, "hbm", dt)
+                self.tracer.span("hbm", cls, f"{cls} {sz / MiB:.1f} MiB", start, dt)
+                left -= sz
+                continue
             self.power(self.hbm_w)
             dt = sz / bw
             yield self.env.timeout(dt)
@@ -274,20 +355,34 @@ class Simulation:
             for seg in self.cost.segments(k):
                 req = self.units[seg.unit].request()
                 yield req
-                start = env.now
-                pw = seg.energy / seg.time if seg.time > 0 else 0.0
-                self.power(pw)
-                yield env.timeout(seg.time)
-                self.power(-pw)
-                self.units[seg.unit].release(req)
                 st = self.st
-                st.busy[seg.unit] += seg.time
+                if self.dynamic:
+                    sc = yield from self.wait_power(lambda: self.fit(seg), seg.unit)
+                    t, e = seg.at(sc) if seg.scalable else (seg.time, seg.energy)
+                    st.power_loss += t - seg.time
+                    self.n_active += 1
+                else:
+                    sc = self.cost.s
+                    t, e = seg.time, seg.energy
+                start = env.now
+                pw = e / t if t > 0 else 0.0
+                self.power(pw)
+                yield env.timeout(t)
+                if self.dynamic:
+                    self.release_power(pw)
+                else:
+                    self.power(-pw)
+                self.units[seg.unit].release(req)
+                st.busy[seg.unit] += t
                 st.work[seg.unit] += seg.work
-                st.energy[seg.unit] += seg.energy
+                st.energy[seg.unit] += e
                 st.dac += seg.dac
                 st.adc += seg.adc
-                self.stage_busy(o.stage, seg.unit, seg.time)
-                self.tracer.span(seg.unit, o.stage, f"{o.op}.{k.kind} L{o.level}", start, seg.time)
+                if seg.scalable:
+                    st.clock_time += sc * t
+                    st.compute_time += t
+                self.stage_busy(o.stage, seg.unit, t)
+                self.tracer.span(seg.unit, o.stage, f"{o.op}.{k.kind} L{o.level}", start, t)
         if pl.out_write:
             yield from self.xfer(pl.out_write, "ct_write", o.stage)
         self.op_end[o.id] = env.now
@@ -300,7 +395,11 @@ class Simulation:
 
     def run(self) -> SimResult:
         self.env.run()
-        return SimResult(self.t, self.hw, self.cost.s, self.env.now, self.st, self.op_start,
+        st = self.st
+        clock = self.cost.s
+        if self.dynamic and st.compute_time > 0:
+            clock = st.clock_time / st.compute_time          # time-weighted mean clock
+        return SimResult(self.t, self.hw, clock, self.env.now, self.st, self.op_start,
                          self.op_end, self.cost.static_w,
                          self.tracer.export() if self.cfg.trace else None)
 
@@ -314,7 +413,13 @@ def simulate(trace: Trace, cfg: SimConfig | Accelerator) -> SimResult:
     """
     if isinstance(cfg, Accelerator):
         cfg = SimConfig(cfg)
-    s = cfg.clock if cfg.clock is not None else cfg.hw.tdp_clock()
+    hw = cfg.hw
+    if cfg.clock is not None:
+        s = cfg.clock
+    elif hw.enforce_tdp and hw.power_mode == "dynamic":
+        s = 1.0                                   # a cap; the power manager clocks each kernel
+    else:
+        s = hw.tdp_clock()
     res = Simulation(trace, cfg, s).run()
     if cfg.dvfs and cfg.clock is None:
         b = res.stats.busy

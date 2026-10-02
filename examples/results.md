@@ -32,7 +32,7 @@ All hardware coefficients are illustrative.
 
 ```
 ── ARK-like (N=2^16, L=23, dnum=4) on Digital FHE accelerator (ARK-class, illustrative)
-bootstraps 1   latency 13.94 ms   per bootstrap 13.94 ms   clock 100%
+bootstraps 1   latency 13.94 ms   per bootstrap 13.94 ms   clock 100% (dynamic)
 utilisation  ntt 13%  mac 29%  auto 2%  hbm 89%
 verdict      memory-bound
 stages       modraise 0.01 ms (0%)  cts 10.00 ms (72%)  evalmod 1.45 ms (10%)  stc 2.47 ms (18%)
@@ -112,9 +112,9 @@ analytic lower bound 10.01 ms
 |---|---|---|---|---|
 | 512 | 34.2 ms, memory-bound | 21.9 ms, NTT-bound | 17.9 ms, NTT-bound | 16.7 ms, NTT-bound |
 | 1024 | 28.8 ms, memory-bound | 17.2 ms, memory-bound | 11.5 ms, NTT-bound | 9.8 ms, NTT-bound |
-| 2048 | 27.0 ms, memory-bound | 14.8 ms, memory-bound | 8.8 ms, memory-bound | 7.4 ms, power-bound |
-| 4096 | 26.4 ms, memory-bound | 13.9 ms, memory-bound | 7.9 ms, memory-bound | 6.7 ms, power-bound |
-| 8192 | 26.3 ms, memory-bound | 14.0 ms, memory-bound | 8.2 ms, memory-bound | 7.3 ms, power-bound |
+| 2048 | 27.0 ms, memory-bound | 14.8 ms, memory-bound | 8.8 ms, memory-bound | 6.7 ms, MAC-bound |
+| 4096 | 26.4 ms, memory-bound | 13.9 ms, memory-bound | 7.9 ms, memory-bound | 5.6 ms, MAC-bound |
+| 8192 | 26.2 ms, memory-bound | 13.8 ms, memory-bound | 7.7 ms, memory-bound | 5.5 ms, MAC-bound |
 
 **Min-KS + seeded keys + OTF plaintexts** (MAC lanes = 2 x NTT butterflies; cells: latency, verdict)
 
@@ -122,22 +122,27 @@ analytic lower bound 10.01 ms
 |---|---|---|---|---|
 | 512 | 28.7 ms, NTT-bound | 28.6 ms, NTT-bound | 28.6 ms, NTT-bound | 28.6 ms, NTT-bound |
 | 1024 | 15.3 ms, NTT-bound | 15.2 ms, NTT-bound | 15.1 ms, NTT-bound | 15.1 ms, NTT-bound |
-| 2048 | 9.6 ms, MAC-bound | 9.5 ms, MAC-bound | 9.4 ms, MAC-bound | 10.2 ms, power-bound |
-| 4096 | 7.5 ms, MAC-bound | 7.2 ms, MAC-bound | 7.1 ms, MAC-bound | 9.0 ms, power-bound |
-| 8192 | 7.1 ms, power-bound | 7.0 ms, power-bound | 7.4 ms, power-bound | 9.3 ms, power-bound |
+| 2048 | 9.6 ms, MAC-bound | 9.5 ms, MAC-bound | 9.4 ms, MAC-bound | 9.4 ms, MAC-bound |
+| 4096 | 7.5 ms, MAC-bound | 7.2 ms, MAC-bound | 7.1 ms, MAC-bound | 7.1 ms, MAC-bound |
+| 8192 | 6.7 ms, MAC-bound | 6.3 ms, MAC-bound | 6.3 ms, MAC-bound | 6.2 ms, MAC-bound |
 
-## 8. Power and energy
+## 8. Power and energy (TDP 250 W; dynamic = the power manager, worst-case = one fixed TDP clock)
 
-| configuration | bootstrap | clock | avg W | peak W | mJ / bootstrap | static / HBM energy | verdict |
-|---|---|---|---|---|---|---|---|
-| ARK-class, baseline | 13.94 ms | 100% | 82 | 176 | 1139 | 49% / 33% | memory-bound |
-| ARK-class, baseline, DVFS | 15.83 ms | 50% | 72 | 103 | 1134 | 56% / 33% | memory-bound |
-| ARK-class, all techniques | 7.19 ms | 100% | 84 | 150 | 607 | 47% / 4% | MAC-bound |
-| 2x NTT + MAC, all techniques | 6.95 ms | 91% | 82 | 179 | 569 | 49% / 4% | power-bound (MAC-bound at a TDP-limited clock) |
-| 4x NTT + MAC, all techniques | 8.28 ms | 74% | 70 | 135 | 577 | 57% / 4% | power-bound (MAC-bound at a TDP-limited clock) |
-| 4x, TDP not enforced | 6.20 ms | 100% | 92 | 239 | 567 | 44% / 4% | MAC-bound |
+| configuration | power mode | bootstrap | mean clock | avg W | peak W | mJ / bootstrap | static / HBM energy | verdict |
+|---|---|---|---|---|---|---|---|---|
+| ARK-class, baseline | dynamic | 13.94 ms | 100% | 82 | 176 | 1139 | 49% / 33% | memory-bound |
+| ARK-class, baseline | worst-case | 13.94 ms | 100% | 82 | 176 | 1139 | 49% / 33% | memory-bound |
+| ARK-class, baseline, DVFS | dynamic | 15.83 ms | 50% | 72 | 103 | 1134 | 56% / 33% | memory-bound |
+| ARK-class, baseline, DVFS | worst-case | 15.83 ms | 50% | 72 | 103 | 1134 | 56% / 33% | memory-bound |
+| ARK-class, all techniques | dynamic | 7.19 ms | 100% | 84 | 150 | 607 | 47% / 4% | MAC-bound |
+| ARK-class, all techniques | worst-case | 7.19 ms | 100% | 84 | 150 | 607 | 47% / 4% | MAC-bound |
+| 2x NTT + MAC, all techniques | dynamic | 6.34 ms | 100% | 90 | 218 | 573 | 44% / 4% | MAC-bound |
+| 2x NTT + MAC, all techniques | worst-case | 6.95 ms | 91% | 82 | 179 | 569 | 49% / 4% | power-bound (MAC-bound at a TDP-limited clock) |
+| 4x NTT + MAC, all techniques | dynamic | 6.20 ms | 100% | 92 | 239 | 567 | 44% / 4% | MAC-bound |
+| 4x NTT + MAC, all techniques | worst-case | 8.28 ms | 74% | 70 | 135 | 577 | 57% / 4% | power-bound (MAC-bound at a TDP-limited clock) |
+| 4x, TDP not enforced | none | 6.20 ms | 100% | 92 | 239 | 567 | 44% / 4% | MAC-bound |
 
-TDP 250 W in every row; worst-case power of the 4x design at full clock: 462 W
+Worst-case power of the 4x design at full clock: 462 W
 
 ## 9. Optical NTT engine: the precision tax
 
@@ -208,10 +213,9 @@ Energy question only: the TDP is not enforced in this search, so the clock stays
 
 | NTT bfly/cycle | SRAM MiB | HBM GB/s | bootstrap | mJ | verdict |
 |---|---|---|---|---|---|
-| 8192 | 512 | 1000 | 6.51 ms | 575 | power-bound (MAC-bound at a TDP-limited clock) |
-| 8192 | 512 | 2000 | 6.96 ms | 570 | power-bound (MAC-bound at a TDP-limited clock) |
+| 8192 | 512 | 2000 | 6.34 ms | 573 | MAC-bound |
 
-36 design points simulated in 0.3 s on 8 processes; 2 are Pareto-optimal.
+36 design points simulated in 0.4 s on 8 processes; 1 Pareto-optimal.
 
 ## 12. Calibration against OpenFHE (this machine) and simulator speed
 
@@ -223,7 +227,7 @@ HRotate (predicted)                324.8ms     292.5ms     -10%
 Sparse bootstrap (predicted)     12112.7ms    9282.8ms     -23%
 ```
 
-One ARK-set bootstrap (203 HE ops, 1153 kernels): Python/SimPy 61 ms, JavaScript (node) 11 ms of wall-clock time.
+One ARK-set bootstrap (203 HE ops, 1153 kernels): Python/SimPy 70 ms, JavaScript (node) 12 ms of wall-clock time.
 
 ## 13. The dnum trade-off (N = 2^16, L = 23, top level; log PQ uses 50-bit scaling and 60-bit special primes)
 
@@ -263,3 +267,15 @@ One ARK-set bootstrap (203 HE ops, 1153 kernels): Python/SimPy 61 ms, JavaScript
 | 14 | 163.84 | 327.68 | 491.5 |
 | 16 | 655.36 | 1310.72 | 1966.1 |
 | 20 | 10485.76 | 20971.52 | 31457.3 |
+
+## 16. The dynamic power manager against worst-case clocking (all techniques)
+
+| design | worst-case: bootstrap | clock | peak | verdict | dynamic: bootstrap | mean clock | peak | verdict |
+|---|---|---|---|---|---|---|---|---|
+| ARK-class, HBM 1 TB/s | 7.19 ms | 100% | 150 W | MAC-bound | 7.19 ms | 100% | 150 W | MAC-bound |
+| ARK-class, HBM 2 TB/s | 7.13 ms | 100% | 173 W | MAC-bound | 7.13 ms | 100% | 173 W | MAC-bound |
+| ARK-class, HBM 4 TB/s | 8.98 ms | 79% | 205 W | power-bound | 7.10 ms | 100% | 233 W | MAC-bound |
+| 4x NTT + MAC | 8.28 ms | 74% | 135 W | power-bound | 6.20 ms | 100% | 239 W | MAC-bound |
+| 4x NTT + MAC, TDP 150 W | 11.62 ms | 53% | 95 W | power-bound | 6.41 ms | 99% | 150 W | MAC-bound |
+| 4x NTT + MAC, TDP 100 W | cannot run | - | - | TDP below worst case at s_min | 6.68 ms | 92% | 100 W | power-bound |
+| 4x NTT + MAC, TDP 80 W | cannot run | - | - | TDP below worst case at s_min | 7.73 ms | 89% | 80 W | power-bound |

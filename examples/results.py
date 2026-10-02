@@ -128,21 +128,24 @@ for label, o in (("baseline algorithm", {}), ("Min-KS + seeded keys + OTF plaint
     table(["NTT bfly/cycle \\ HBM GB/s"] + [f"{b:.0f}" for b in hbms], rows)
 
 # 8 ── power ─────────────────────────────────────────────────────────────
-h("8. Power and energy")
+h("8. Power and energy (TDP 250 W; dynamic = the power manager, worst-case = one fixed TDP clock)")
+X2 = dict(ntt_bfly_per_cycle=8192, mac_lanes=16384)
+X4 = dict(ntt_bfly_per_cycle=16384, mac_lanes=32768)
 rows = []
 for name, hw, o, dv in [("ARK-class, baseline", HW, {}, False), ("ARK-class, baseline, DVFS", HW, {}, True),
                         ("ARK-class, all techniques", HW, ALL, False),
-                        ("2x NTT + MAC, all techniques", HW.with_(ntt_bfly_per_cycle=8192, mac_lanes=16384), ALL, False),
-                        ("4x NTT + MAC, all techniques", HW.with_(ntt_bfly_per_cycle=16384, mac_lanes=32768), ALL, False),
-                        ("4x, TDP not enforced", HW.with_(ntt_bfly_per_cycle=16384, mac_lanes=32768, enforce_tdp=False), ALL, False)]:
-    r = run(hw=hw, dvfs=dv, **o)
-    e = r["energy"]
-    rows.append([name, ms(r["per_bootstrap_s"]), f"{100 * r['clock']:.0f}%", f"{e['avg_power_W']:.0f}",
-                 f"{e['peak_power_W']:.0f}", f"{1e3 * e['per_bootstrap_J']:.0f}",
-                 f"{100 * e['breakdown']['static']:.0f}% / {100 * e['breakdown']['hbm']:.0f}%", r["bound"]])
-table(["configuration", "bootstrap", "clock", "avg W", "peak W", "mJ / bootstrap", "static / HBM energy", "verdict"], rows)
-OUT.append(f"\nTDP 250 W in every row; worst-case power of the 4x design at full clock: "
-           f"{HW.with_(ntt_bfly_per_cycle=16384, mac_lanes=32768).peak_power(1.0):.0f} W")
+                        ("2x NTT + MAC, all techniques", HW.with_(**X2), ALL, False),
+                        ("4x NTT + MAC, all techniques", HW.with_(**X4), ALL, False),
+                        ("4x, TDP not enforced", HW.with_(enforce_tdp=False, **X4), ALL, False)]:
+    for mode in (("dynamic", "worst-case") if hw.enforce_tdp else ("none",)):
+        r = run(hw=hw if mode == "none" else hw.with_(power_mode=mode), dvfs=dv, **o)
+        e = r["energy"]
+        rows.append([name, mode, ms(r["per_bootstrap_s"]), f"{100 * r['clock']:.0f}%", f"{e['avg_power_W']:.0f}",
+                     f"{e['peak_power_W']:.0f}", f"{1e3 * e['per_bootstrap_J']:.0f}",
+                     f"{100 * e['breakdown']['static']:.0f}% / {100 * e['breakdown']['hbm']:.0f}%", r["bound"]])
+table(["configuration", "power mode", "bootstrap", "mean clock", "avg W", "peak W", "mJ / bootstrap",
+       "static / HBM energy", "verdict"], rows)
+OUT.append(f"\nWorst-case power of the 4x design at full clock: {HW.with_(**X4).peak_power(1.0):.0f} W")
 
 # 9 ── optics ────────────────────────────────────────────────────────────
 h("9. Optical NTT engine: the precision tax")
@@ -211,7 +214,7 @@ front = pareto(rows)
 table(["NTT bfly/cycle", "SRAM MiB", "HBM GB/s", "bootstrap", "mJ", "verdict"],
       [[r["ntt_bfly_per_cycle"], r["sram_mib"], f"{r['hbm_gbps']:.0f}", ms(r["latency_s"]),
         f"{1e3 * r['energy_J']:.0f}", r["bound"]] for r in front])
-OUT.append(f"\n{len(rows)} design points simulated in {sweep_s:.1f} s on 8 processes; {len(front)} are Pareto-optimal.")
+OUT.append(f"\n{len(rows)} design points simulated in {sweep_s:.1f} s on 8 processes; {len(front)} Pareto-optimal.")
 
 # 12 ── calibration and speed ────────────────────────────────────────────
 h("12. Calibration against OpenFHE (this machine) and simulator speed")
@@ -269,6 +272,25 @@ for e in (6, 8, 10, 12, 14, 16, 20):
     eng = OpticalEngine(enob=e)
     rows.append([e, f"{eng.pj_dac():.2f}", f"{eng.pj_adc():.2f}", f"{eng.pj_dac() + eng.pj_adc():.1f}"])
 table(["ENOB", "DAC pJ/sample", "ADC pJ/sample", "DAC + ADC pJ"], rows)
+
+# 16 ── dynamic power manager against worst-case clocking ──────────────
+h("16. The dynamic power manager against worst-case clocking (all techniques)")
+rows = []
+for label, over in [("ARK-class, HBM 1 TB/s", {}), ("ARK-class, HBM 2 TB/s", dict(hbm_gbps=2000.0)),
+                    ("ARK-class, HBM 4 TB/s", dict(hbm_gbps=4000.0)), ("4x NTT + MAC", X4),
+                    ("4x NTT + MAC, TDP 150 W", dict(X4, tdp_w=150.0)), ("4x NTT + MAC, TDP 100 W", dict(X4, tdp_w=100.0)),
+                    ("4x NTT + MAC, TDP 80 W", dict(X4, tdp_w=80.0))]:
+    cells = [label]
+    for mode in ("worst-case", "dynamic"):
+        try:
+            r = run(hw=HW.with_(power_mode=mode, **over), **ALL)
+            cells += [ms(r["per_bootstrap_s"]), f"{100 * r['clock']:.0f}%", f"{r['energy']['peak_power_W']:.0f} W",
+                      r["bound"].split(" (")[0]]
+        except ValueError:
+            cells += ["cannot run", "-", "-", "TDP below worst case at s_min"]
+    rows.append(cells)
+table(["design", "worst-case: bootstrap", "clock", "peak", "verdict", "dynamic: bootstrap", "mean clock", "peak",
+       "verdict"], rows)
 
 text = "# Results (generated by examples/results.py)\n\nAll hardware coefficients are illustrative.\n" + "\n".join(OUT) + "\n"
 (Path(__file__).parent / "results.md").write_text(text)

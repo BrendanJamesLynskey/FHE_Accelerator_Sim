@@ -244,7 +244,7 @@
         const hw = Object.assign({ name: 'Digital FHE accelerator (ARK-class, illustrative)', freqGhz: 1.0, nttBflyPerCycle: 4096,
             macLanes: 8192, autoWordsPerCycle: 4096, sramMib: 512, sramGbps: 20000.0, hbmGbps: 1000.0, hbmChunkMib: 4, window: 4,
             tdpW: 250.0, staticW: 40.0, pjBfly: 10.0, pjMac: 5.0, pjAutoWord: 1.0, pjSramByte: 1.0, pjHbmByte: 30.0, sMin: 0.5,
-            enforceTdp: true, optical: null }, o);
+            enforceTdp: true, powerMode: 'dynamic', hbmMinFrac: 0.25, optical: null }, o);
         hw.sramBytes = hw.sramMib * MiB;
         hw.rate = u => ({ ntt: hw.nttBflyPerCycle, mac: hw.macLanes, auto: hw.autoWordsPerCycle })[u] * hw.freqGhz * 1e9;
         hw.pj = u => ({ ntt: hw.pjBfly, mac: hw.pjMac, auto: hw.pjAutoWord })[u];
@@ -292,8 +292,8 @@
         const seg = (unit, work, words) => {
             const tLogic = work / (hw.rate(unit) * s), tSram = words * 8 / (hw.sramGbps * 1e9 * s);
             const t = tLogic >= tSram ? tLogic : tSram;
-            const e = work * hw.pj(unit) * 1e-12 * s * s + words * 8 * hw.pjSramByte * 1e-12;
-            return { unit, time: t, energy: e, work, dac: 0, adc: 0 };
+            const el = work * hw.pj(unit) * 1e-12 * s * s, es = words * 8 * hw.pjSramByte * 1e-12;
+            return { unit, time: t, energy: el + es, work, dac: 0, adc: 0, eLogic: el, eSram: es, scalable: true };
         };
         return {
             s, staticW: hw.staticW + (hw.optical ? hw.optical.staticW : 0.0),
@@ -306,7 +306,7 @@
                 const blocks = k.amount * (N / o.block);
                 const dac = blocks * dacPlanes * 2 * o.block, adc = blocks * adcPlanes * 2 * o.block;
                 const t = (dac >= adc ? dac : adc) / o.samplesPerS;
-                segs.push({ unit: 'optical', time: t, energy: dac * o.pjDac() * 1e-12 + adc * o.pjAdc() * 1e-12, work: dac + adc, dac, adc });
+                segs.push({ unit: 'optical', time: t, energy: dac * o.pjDac() * 1e-12 + adc * o.pjAdc() * 1e-12, work: dac + adc, dac, adc, eLogic: 0, eSram: 0, scalable: false });
                 const corr = k.amount * N * (o.ideal ? 3 : d + adcPlanes + 3);
                 segs.push(seg('mac', corr, 3 * corr));
                 return segs;
@@ -435,13 +435,22 @@
         }
     }
 
+    // a segment costed at full clock, run at clock fraction s (mirror of Segment.at / Segment.power)
+    const segAt = (seg, s) => [seg.time / s, seg.eLogic * s * s + seg.eSram];
+    const segPower = (seg, s) => { const [t, e] = segAt(seg, s); return e / t; };
+
     function runSim(trace, hw, clock, traceOn) {
-        const p = trace.params, env = new Env(), cost = costModel(hw, p.logN, p.qBits, clock);
+        const dynamic = hw.enforceTdp && hw.powerMode === 'dynamic';
+        if (hw.powerMode !== 'dynamic' && hw.powerMode !== 'worst-case') throw new Error(`unknown powerMode ${hw.powerMode}`);
+        const p = trace.params, env = new Env(), cost = costModel(hw, p.logN, p.qBits, dynamic ? 1.0 : clock);
+        const cap = clock, budget = hw.tdpW - cost.staticW;
+        if (dynamic && budget <= 0) throw new Error(`TDP ${hw.tdpW} W is below static power`);
+        let pwait = [], nActive = 0;
         const units = {}; for (const u of UNITS) units[u] = new Resource(env, 1);
         const hbm = new Resource(env, 1);
         const st = { busy: { ntt: 0, mac: 0, auto: 0, optical: 0, hbm: 0 }, work: { ntt: 0, mac: 0, auto: 0, optical: 0 },
                      energy: { ntt: 0, mac: 0, auto: 0, optical: 0, hbm: 0 }, bytes: { key: 0, pt: 0, ct_read: 0, ct_write: 0 },
-                     dac: 0, adc: 0, stageBusy: {}, stageFirst: {}, stageLast: {}, peakW: 0 };
+                     dac: 0, adc: 0, stageBusy: {}, stageFirst: {}, stageLast: {}, peakW: 0, powerLoss: 0, clockTime: 0, computeTime: 0 };
         const spans = [];
         const n = trace.ops.length, producer = {}, lastUse = {};
         for (const o of trace.ops) producer[o.output] = o.id;
@@ -472,6 +481,38 @@
             return pl;
         }
         const power = dp => { pNow += dp; if (pNow > st.peakW) st.peakW = pNow; };
+        // ── the dynamic power manager (mirror of sim.py) ──
+        function fit(seg) {
+            const head = budget - pNow;
+            if (!seg.scalable) return seg.energy / seg.time <= head ? 1.0 : null;
+            if (segPower(seg, cap) <= head) return cap;
+            let lo = hw.sMin < cap ? hw.sMin : cap;
+            if (segPower(seg, lo) > head) return null;
+            let hi = cap;
+            for (let i = 0; i < 50; i++) { const mid = (lo + hi) / 2; if (segPower(seg, mid) <= head) lo = mid; else hi = mid; }
+            return lo;
+        }
+        function fitHbm() {
+            const head = budget - pNow;
+            if (hbmW <= head) return 1.0;
+            const f = head / hbmW;
+            return f >= hw.hbmMinFrac ? f : null;
+        }
+        function* waitPower(fitFn, what) {
+            const t0 = env.now; let x;
+            for (;;) {
+                x = fitFn();
+                if (x !== null) break;
+                if (nActive === 0) throw new Error(`TDP ${hw.tdpW} W cannot power ${what} even at the lowest setting`);
+                const ev = env.event(); pwait.push(ev); yield ev;
+            }
+            st.powerLoss += env.now - t0;
+            return x;
+        }
+        function releasePower(dp) {
+            power(-dp); nActive--;
+            if (pwait.length) { const waiting = pwait; pwait = []; for (const ev of waiting) ev.succeed(); }
+        }
         const stageBusy = (stage, unit, dt) => { const d = st.stageBusy[stage] || (st.stageBusy[stage] = {}); d[unit] = (d[unit] || 0.0) + dt; };
         function* waitDone(i) { if (!done[i]) yield doneEv[i]; }
         function* xfer(nbytes, cls, stage) {
@@ -479,10 +520,22 @@
             while (left > 0) {
                 const sz = left < chunk ? left : chunk;
                 const req = hbm.request(); yield req;
-                const start = env.now; power(hbmW);
-                const dt = sz / bw;
-                yield env.timeout(dt);
-                power(-hbmW); hbm.release(req);
+                const start = env.now;
+                let dt;
+                if (dynamic) {
+                    const f = yield* waitPower(fitHbm, 'HBM');
+                    const pw = f >= 1.0 ? hbmW : hbmW * f;
+                    dt = f >= 1.0 ? sz / bw : sz / (bw * f);
+                    st.powerLoss += dt - sz / bw;
+                    nActive++; power(pw);
+                    yield env.timeout(dt);
+                    releasePower(pw); hbm.release(req);
+                } else {
+                    power(hbmW);
+                    dt = sz / bw;
+                    yield env.timeout(dt);
+                    power(-hbmW); hbm.release(req);
+                }
                 st.busy.hbm += dt; st.energy.hbm += sz * hw.pjHbmByte * 1e-12; stageBusy(stage, 'hbm', dt);
                 if (traceOn) spans.push(['hbm', stage, start, dt, cls]);
                 left -= sz;
@@ -502,13 +555,23 @@
             for (const k of o.kernels) {
                 for (const seg of cost.segments(k)) {
                     const req = units[seg.unit].request(); yield req;
-                    const start = env.now, pw = seg.time > 0 ? seg.energy / seg.time : 0.0;
+                    let sc, t, e;
+                    if (dynamic) {
+                        sc = yield* waitPower(() => fit(seg), seg.unit);
+                        [t, e] = seg.scalable ? segAt(seg, sc) : [seg.time, seg.energy];
+                        st.powerLoss += t - seg.time;
+                        nActive++;
+                    } else { sc = cost.s; t = seg.time; e = seg.energy; }
+                    const start = env.now, pw = t > 0 ? e / t : 0.0;
                     power(pw);
-                    yield env.timeout(seg.time);
-                    power(-pw); units[seg.unit].release(req);
-                    st.busy[seg.unit] += seg.time; st.work[seg.unit] += seg.work; st.energy[seg.unit] += seg.energy;
-                    st.dac += seg.dac; st.adc += seg.adc; stageBusy(o.stage, seg.unit, seg.time);
-                    if (traceOn) spans.push([seg.unit, o.stage, start, seg.time, `${o.op}.${k.kind} L${o.level}`]);
+                    yield env.timeout(t);
+                    if (dynamic) releasePower(pw); else power(-pw);
+                    units[seg.unit].release(req);
+                    st.busy[seg.unit] += t; st.work[seg.unit] += seg.work; st.energy[seg.unit] += e;
+                    st.dac += seg.dac; st.adc += seg.adc;
+                    if (seg.scalable) { st.clockTime += sc * t; st.computeTime += t; }
+                    stageBusy(o.stage, seg.unit, t);
+                    if (traceOn) spans.push([seg.unit, o.stage, start, t, `${o.op}.${k.kind} L${o.level}`]);
                 }
             }
             if (pl.outWrite) yield* xfer(pl.outWrite, 'ct_write', o.stage);
@@ -525,12 +588,15 @@
         }
         env.process(issuer());
         env.run();
-        return { trace, hw, clock: cost.s, horizon: env.now, stats: st, opStart, opEnd, staticW: cost.staticW, spans };
+        let meanClock = cost.s;
+        if (dynamic && st.computeTime > 0) meanClock = st.clockTime / st.computeTime;
+        return { trace, hw, clock: meanClock, horizon: env.now, stats: st, opStart, opEnd, staticW: cost.staticW, spans };
     }
 
     function simulate(trace, hw, opt) {
         opt = opt || {};
-        const s = opt.clock !== undefined && opt.clock !== null ? opt.clock : hw.tdpClock();
+        const s = opt.clock !== undefined && opt.clock !== null ? opt.clock
+                : (hw.enforceTdp && hw.powerMode === 'dynamic') ? 1.0 : hw.tdpClock();
         let res = runSim(trace, hw, s, !!opt.trace);
         if (opt.dvfs && (opt.clock === undefined || opt.clock === null)) {
             const b = res.stats.busy;
@@ -554,7 +620,9 @@
         let top = 'hbm';
         for (const u of resources) if (util[u] > util[top]) top = u;
         let bound = BOUND_NAME[top];
-        if (res.clock < 1.0 && top !== 'hbm' && hw.enforceTdp) bound = 'power-bound (' + BOUND_NAME[top] + ' at a TDP-limited clock)';
+        const dynamic = hw.enforceTdp && hw.powerMode === 'dynamic';
+        if (top !== 'hbm' && hw.enforceTdp && ((dynamic && st.powerLoss > 0.1 * H) || (!dynamic && res.clock < 1.0)))
+            bound = 'power-bound (' + BOUND_NAME[top] + ' at a TDP-limited clock)';
         const stages = {}, hot = {};
         for (const s of STAGES) {
             if (!(s in st.stageFirst)) continue;
@@ -581,15 +649,16 @@
             hbmBytes: Object.assign({}, b, { total: hbmTotal, keyShare: hbmTotal ? b.key / hbmTotal : 0.0 }),
             energy: { totalJ: total, perBootstrapJ: total / nBoot, avgPowerW: total / H, peakW: res.staticW + st.peakW, tdpW: hw.tdpW,
                       breakdown: br, dacSamples: st.dac, adcSamples: st.adc },
-            lowerBoundS: lower,
+            lowerBoundS: lower, powerMode: hw.enforceTdp ? hw.powerMode : 'none', powerLossS: st.powerLoss,
         };
     }
 
     // ── convenience for the parity test and the deck ─────────────────
     const camel = o => { const m = { n_boot: 'nBoot', min_ks: 'minKs', seeded_keys: 'seededKeys', otf_plaintexts: 'otfPlaintexts' }, out = {};
         for (const [k, v] of Object.entries(o || {})) out[m[k] || k] = v; return out; };
-    function simulateNamed(paramsName, hwName, opts, dvfs) {
-        const p = mkParams(PARAMS[paramsName]), hw = ACCELERATORS[hwName]();
+    function simulateNamed(paramsName, hwName, opts, dvfs, hwOver) {
+        const p = mkParams(PARAMS[paramsName]);
+        const hw = hwOver ? withHw(ACCELERATORS[hwName](), hwOver) : ACCELERATORS[hwName]();
         return simulate(bootstrapTrace(p, camel(opts)), hw, { dvfs: !!dvfs });
     }
     root.FheSim = { PARAMS, ACCELERATORS, STAGES, UNITS, mkParams, bootstrapTrace, heOpTrace, summariseTrace, accelerator, optical, withHw,

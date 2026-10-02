@@ -195,13 +195,48 @@ def test_energy_accounts_add_up():
     assert r.stats.energy["hbm"] == pytest.approx(sum(r.stats.bytes.values()) * HW.pj_hbm_byte * 1e-12)
 
 
-@pytest.mark.parametrize("ntt", [4096, 16384, 32768])
-def test_tdp_is_never_exceeded(ntt):
-    hw = HW.with_(ntt_bfly_per_cycle=ntt, mac_lanes=2 * ntt, tdp_w=250.0)
+@pytest.mark.parametrize("mode", ["worst-case", "dynamic"])
+@pytest.mark.parametrize("ntt,tdp", [(4096, 250.0), (16384, 250.0), (32768, 250.0), (16384, 150.0)])
+def test_tdp_is_never_exceeded(ntt, tdp, mode):
+    hw = HW.with_(ntt_bfly_per_cycle=ntt, mac_lanes=2 * ntt, tdp_w=tdp, power_mode=mode)
     m = summarise(run(min_ks=True, seeded_keys=True, otf_plaintexts=True, hw=hw)[1])
-    assert m["energy"]["peak_power_W"] <= 250.0 * (1 + 1e-12)
-    if hw.peak_power(1.0) > 250.0:
+    assert m["energy"]["peak_power_W"] <= tdp * (1 + 1e-12)
+    if mode == "worst-case" and hw.peak_power(1.0) > tdp:
         assert m["clock"] < 1.0 and m["bound"].startswith("power-bound")
+
+
+def test_dynamic_power_manager_beats_worst_case_clocking():
+    """Worst-case clocking reserves power for HBM and every unit at once; the manager does not,
+    so over-provisioned designs and very fast HBM stop being penalised."""
+    opts = dict(min_ks=True, seeded_keys=True, otf_plaintexts=True)
+    for over in (dict(ntt_bfly_per_cycle=16384, mac_lanes=32768), dict(hbm_gbps=4000.0)):
+        wc = summarise(run(hw=HW.with_(power_mode="worst-case", **over), **opts)[1])
+        dy = summarise(run(hw=HW.with_(**over), **opts)[1])
+        assert wc["clock"] < 1.0
+        assert dy["per_bootstrap_s"] < 0.9 * wc["per_bootstrap_s"]
+        assert dy["energy"]["peak_power_W"] <= HW.tdp_w * (1 + 1e-12)
+    # the fast-HBM anomaly: worst-case 4 TB/s is slower than 2 TB/s; dynamic is not
+    lat = {(mode, bw): summarise(run(hw=HW.with_(power_mode=mode, hbm_gbps=bw), **opts)[1])["per_bootstrap_s"]
+           for mode in ("worst-case", "dynamic") for bw in (2000.0, 4000.0)}
+    assert lat[("worst-case", 4000.0)] > lat[("worst-case", 2000.0)]
+    assert lat[("dynamic", 4000.0)] <= lat[("dynamic", 2000.0)] * 1.01
+
+
+def test_dynamic_manager_throttles_under_a_tight_tdp():
+    """At 100 W worst-case clocking cannot run this design at all (even s_min reserves too much);
+    the manager runs it, throttling when the real draw nears the limit."""
+    hw = HW.with_(ntt_bfly_per_cycle=16384, mac_lanes=32768, tdp_w=100.0)
+    with pytest.raises(ValueError):
+        run(hw=hw.with_(power_mode="worst-case"), min_ks=True, seeded_keys=True, otf_plaintexts=True)
+    _, r = run(hw=hw, min_ks=True, seeded_keys=True, otf_plaintexts=True)
+    m = summarise(r)
+    assert r.stats.power_loss > 0.1 * r.horizon and m["bound"].startswith("power-bound")
+    assert m["clock"] < 1.0 and m["energy"]["peak_power_W"] <= 100.0 * (1 + 1e-12)
+
+
+def test_unknown_power_mode_is_an_error():
+    with pytest.raises(ValueError):
+        simulate(bootstrap_trace(SMALL), HW.with_(power_mode="turbo"))
 
 
 def test_cap_below_static_is_an_error():
@@ -279,51 +314,60 @@ def test_calibration_against_openfhe():
     assert boot == pytest.approx(sum(measured_boot) / 3, rel=0.30)             # predicted
 
 
+JS_NAMES = {"power_mode": "powerMode", "tdp_w": "tdpW", "hbm_gbps": "hbmGbps",
+            "ntt_bfly_per_cycle": "nttBflyPerCycle", "mac_lanes": "macLanes"}
+
+
 def js_cases():
-    p_small = PARAMS["small"]
+    """(parameter set, hardware preset, algorithm options, hardware overrides)."""
+    hot = dict(ntt_bfly_per_cycle=16384, mac_lanes=32768)
     return [
-        ("ark", "ark", dict()),
-        ("ark", "small", dict(min_ks=True, seeded_keys=True)),
-        ("small", "ark", dict(n_boot=2, hoisting=False)),
-        ("ark", "ark", dict(otf_plaintexts=True)),
-        ("openfhe-sparse", "cpu", dict()),
-        ("ark", "hybrid", dict()),
-        ("ark", "ideal-optical", dict(n_boot=2)),
-        ("ark", "hot", dict()),
-    ], p_small
+        ("ark", "ark", dict(), {}),
+        ("ark", "ark", dict(), dict(power_mode="worst-case")),
+        ("ark", "small", dict(min_ks=True, seeded_keys=True), {}),
+        ("small", "ark", dict(n_boot=2, hoisting=False), {}),
+        ("ark", "ark", dict(otf_plaintexts=True), dict(hbm_gbps=4000.0)),
+        ("openfhe-sparse", "cpu", dict(), {}),
+        ("ark", "hybrid", dict(), {}),
+        ("ark", "ideal-optical", dict(n_boot=2), {}),
+        ("ark", "ark", dict(min_ks=True, seeded_keys=True, otf_plaintexts=True), dict(hot, power_mode="worst-case")),
+        ("ark", "ark", dict(min_ks=True, seeded_keys=True, otf_plaintexts=True), dict(hot, tdp_w=150.0)),
+        ("ark", "ark", dict(), dict(hbm_gbps=4000.0, tdp_w=150.0)),
+    ]
 
 
 def test_javascript_port_matches_python():
-    """The browser simulator in deck 03 must reproduce this package exactly."""
+    """The browser simulator in deck 03 must reproduce this package exactly, in both power modes."""
     node = shutil.which("node")
     if node is None:
         pytest.skip("node not installed")
     engine = ROOT / "web" / "sim_engine.js"
-    hot = HW.with_(ntt_bfly_per_cycle=16384, mac_lanes=32768)     # forces a TDP-limited clock
-    cases, _ = js_cases()
     payload, expect = [], []
-    for pname, hname, opts in cases:
-        hw = hot if hname == "hot" else ACCELERATORS[hname]
+    for pname, hname, opts, over in js_cases():
+        hw = ACCELERATORS[hname].with_(**over)
         for dvfs in (False, True):
             t = bootstrap_trace(PARAMS[pname], BootOptions(**opts))
             r = simulate(t, SimConfig(hw, dvfs=dvfs))
             m = summarise(r)
-            payload.append({"params": pname, "hw": hname, "opts": opts, "dvfs": dvfs})
+            payload.append({"params": pname, "hw": hname, "opts": opts, "dvfs": dvfs,
+                            "over": {JS_NAMES[k]: v for k, v in over.items()}})
             expect.append({"horizon": r.horizon, "end": r.op_end, "clock": r.clock,
                            "bytes": r.stats.bytes, "energy": m["energy"]["total_J"],
                            "peak": m["energy"]["peak_power_W"], "bound": m["bound"],
-                           "hot": m["hotspots"]["resource"]})
+                           "hot": m["hotspots"]["resource"], "loss": r.stats.power_loss})
     script = (f"require({json.dumps(str(engine))});"
               "const F=globalThis.FheSim, cases=JSON.parse(require('fs').readFileSync(0,'utf8'));"
-              "console.log(JSON.stringify(cases.map(c=>{const r=F.simulateNamed(c.params,c.hw,c.opts,c.dvfs);"
+              "console.log(JSON.stringify(cases.map(c=>{const r=F.simulateNamed(c.params,c.hw,c.opts,c.dvfs,c.over);"
               "const m=F.summarise(r);return {horizon:r.horizon,end:r.opEnd,clock:r.clock,bytes:r.stats.bytes,"
-              "energy:m.energy.totalJ,peak:m.energy.peakW,bound:m.bound,hot:m.hotspots.resource};})));")
+              "energy:m.energy.totalJ,peak:m.energy.peakW,bound:m.bound,hot:m.hotspots.resource,loss:r.stats.powerLoss};})));")
     out = subprocess.run([node, "-e", script], input=json.dumps(payload), capture_output=True,
                          text=True, check=True)
     got = json.loads(out.stdout)
+    assert len(got) == len(expect) == 22
     for e, g, c in zip(expect, got, payload):
         assert g["horizon"] == e["horizon"], c                    # bit-identical: no transcendentals
         assert g["end"] == e["end"], c
         assert g["clock"] == e["clock"] and g["bytes"] == e["bytes"], c
         assert g["energy"] == e["energy"] and g["peak"] == e["peak"], c
+        assert g["loss"] == e["loss"], c
         assert (g["bound"], g["hot"]) == (e["bound"], e["hot"]), c

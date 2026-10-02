@@ -34,8 +34,11 @@ separate, and a test ladder runs from hand formulas to a JavaScript twin.
   by class, Perfetto traces, and an analytic lower bound.
 * **Power:** static power plus pJ per butterfly, multiply-add, permuted word, SRAM byte
   and HBM byte; DAC/ADC energy from a Walden figure of merit (energy ∝ 2^ENOB);
-  laser and thermal-tuning static power; **TDP enforced by default** through a
-  worst-case-power clock; optional DVFS.
+  laser and thermal-tuning static power. The **TDP is enforced by a dynamic power
+  manager**: each kernel gets the highest clock, and each HBM chunk the highest
+  bandwidth, that fits the headroom left by everything running at that moment, and
+  waits if nothing fits. A worst-case fixed clock is kept for comparison
+  (`power_mode="worst-case"`). Optional DVFS.
 * **Optical engine:** a precision model (digit planes, a Bluestein convolution, ENOB)
   backed by a functional model that shows the rounding rule is exact and tight.
 * **Calibration:** one throughput parameter fitted to OpenFHE measured on this
@@ -43,9 +46,9 @@ separate, and a test ladder runs from hand formulas to a JavaScript twin.
 * A **JavaScript port** (`web/sim_engine.js`) that runs live in
   [deck 03](https://brendanjameslynskey.github.io/FHESim_03_Simulating_an_FHE_Accelerator/)
   and matches the Python **bit for bit**.
-* **56 tests:** parameter sizes, closed-form operation counts, invariants, analytic
-  queueing checks, behaviour, power, Hypothesis properties, precision,
-  calibration, and JS ↔ Python parity.
+* **64 tests:** parameter sizes, closed-form operation counts, invariants, analytic
+  queueing checks, behaviour, power (both power modes), Hypothesis properties,
+  precision, calibration, and JS ↔ Python parity.
 
 ---
 
@@ -55,7 +58,7 @@ separate, and a test ladder runs from hand formulas to a JavaScript twin.
 python -m venv .venv
 source .venv/bin/activate
 pip install -e .[dev]
-pytest                                        # 56 tests, about 16 seconds
+pytest                                        # 64 tests, about 20 seconds
 
 fhe-sim                                       # ARK-like parameters on an ARK-class digital design
 fhe-sim --counts                              # operation and byte counts per stage, no timing
@@ -65,6 +68,7 @@ fhe-sim --hw small                            # an NTT-starved design
 fhe-sim --hw small --optical ideal            # hypothetical precision-free optical NTT
 fhe-sim --hw hybrid --enob 16                 # realistic optical engine at 16 ENOB
 fhe-sim --dvfs                                # lower the clock when memory-bound
+fhe-sim --ntt 16384 --mac 32768 --tdp 150 --power-mode worst-case   # vs the default power manager
 fhe-sim --trace boot.json                     # open in https://ui.perfetto.dev
 fhe-sim --dump-trace t.json; fhe-sim --replay t.json
 
@@ -76,7 +80,7 @@ Example report (`fhe-sim`):
 
 ```
 ── ARK-like (N=2^16, L=23, dnum=4) on Digital FHE accelerator (ARK-class, illustrative)
-bootstraps 1   latency 13.94 ms   per bootstrap 13.94 ms   clock 100%
+bootstraps 1   latency 13.94 ms   per bootstrap 13.94 ms   clock 100% (dynamic)
 utilisation  ntt 13%  mac 29%  auto 2%  hbm 89%
 verdict      memory-bound
 stages       modraise 0.01 ms (0%)  cts 10.00 ms (72%)  evalmod 1.45 ms (10%)  stc 2.47 ms (18%)
@@ -93,8 +97,8 @@ power        avg 82 W  peak 176 W (TDP 250 W)  1139.1 mJ/bootstrap  energy: stat
 |--------|------|
 | `src/fhe_sim/params.py` | `CKKSParams`: ring degree, levels, `dnum`, digits; ciphertext, plaintext and evaluation-key sizes; presets |
 | `src/fhe_sim/workload.py` | The scheme model: HE ops → primitive kernels; bootstrap and single-op traces; JSON dump/replay; per-stage counts |
-| `src/fhe_sim/hardware.py` | `Accelerator`, `OpticalEngine`, the `CostModel` (the only place that knows about time and energy), TDP clocking |
-| `src/fhe_sim/sim.py` | The SimPy engine: units as resources, HBM, scratchpad, dependency-aware issue, prefetch, write-backs, DVFS |
+| `src/fhe_sim/hardware.py` | `Accelerator`, `OpticalEngine`, the `CostModel` (the only place that knows about time and energy), worst-case TDP clocking |
+| `src/fhe_sim/sim.py` | The SimPy engine: units as resources, HBM, scratchpad, dependency-aware issue, prefetch, write-backs, the dynamic power manager, DVFS |
 | `src/fhe_sim/metrics.py` | Latency, stage breakdown, utilisation, bound attribution, hot-spots, traffic by class, energy and power |
 | `src/fhe_sim/precision.py` | Functional model of an exact modular NTT on an analogue FFT engine (digit planes, Bluestein, ADC) |
 | `src/fhe_sim/trace.py` | Chrome trace-event export for Perfetto |
@@ -138,6 +142,18 @@ Exact rounding needs 2^(ENOB−1) > d · block · (2^b − 1)^2. With 50-bit lim
 ENOB 12 that forces 1-bit digits: 298 conversions per point to offload 2 butterflies
 per point. Even a precision-free engine pays off in energy only if a conversion
 costs under about 30 pJ (with 5 W of laser and tuning power) or 47 pJ (with none).
+
+**Dynamic power manager against a worst-case clock** (4× NTT and MAC, all key techniques):
+
+| TDP | Worst-case clock | Dynamic power manager |
+|-----|------------------|-----------------------|
+| 250 W | 8.28 ms at 74% | 6.20 ms at 100%, peak 239 W |
+| 150 W | 11.62 ms at 53% | 6.41 ms, mean clock 99%, peak 150 W |
+| 100 W | cannot run | 6.68 ms, mean clock 92%, power-bound |
+
+A worst-case clock reserves power for every unit and HBM running flat out at once,
+which this workload never does. The manager spends the real headroom instead; peak
+power stays at or under the TDP in both modes.
 
 ### Calibration and validation
 
@@ -197,10 +213,10 @@ Anything that can emit this can drive the engine:
 * Scratchpad hits and misses are decided at issue, in program order (a
   compiler-managed scratchpad). Kernel temporaries live in a reserved working set
   sized for one top-level key switch.
-* Static, worst-case TDP clocking: the clock is set so that every unit plus HBM at
-  full rate fits the TDP. It is guaranteed safe but conservative, and is why very
-  fast HBM can lower the compute clock (deck 05).
-* DVFS is one clock for the whole run, chosen from a first pass. Energy per
+* The power manager is greedy and first-come: the first kernel to ask gets the highest
+  clock that fits, and later ones get what is left. Clock changes are instantaneous
+  (no DVFS transition latency), and a kernel keeps its clock until it finishes.
+* DVFS is a clock cap for the whole run, chosen from a first pass. Energy per
   operation scales with clock², and static power is charged for the whole run.
 * The optical mapping is one illustrative route among several: digital stages,
   then Bluestein convolutions on digit planes, then digital correction. Its

@@ -29,7 +29,9 @@ def summarise(res: SimResult) -> dict:
         if util[u] > util[top]:
             top = u
     bound = BOUND_NAME[top]
-    if res.clock < 1.0 and top != "hbm" and hw.enforce_tdp:
+    dynamic = hw.enforce_tdp and hw.power_mode == "dynamic"
+    if top != "hbm" and hw.enforce_tdp and (
+            (dynamic and st.power_loss > 0.1 * H) or (not dynamic and res.clock < 1.0)):
         bound = "power-bound (" + BOUND_NAME[top] + " at a TDP-limited clock)"
 
     stages, hot = {}, {}
@@ -77,6 +79,8 @@ def summarise(res: SimResult) -> dict:
                           key_share=b["key"] / hbm_total if hbm_total else 0.0),
         "energy": energy,
         "lower_bound_s": lower_bound(res),
+        "power_mode": hw.power_mode if hw.enforce_tdp else "none",
+        "power_loss_s": st.power_loss,
     }
 
 
@@ -91,7 +95,7 @@ def format_report(m: dict) -> str:
     u = m["utilisation"]
     lines = [f"── {m['params']} on {m['hardware']}",
              f"bootstraps {m['n_boot']}   latency {ms(m['latency_s'])}   per bootstrap {ms(m['per_bootstrap_s'])}"
-             f"   clock {100 * m['clock']:.0f}%",
+             f"   clock {100 * m['clock']:.0f}% ({m['power_mode']})",
              "utilisation  " + "  ".join(f"{k} {100 * v:.0f}%" for k, v in u.items() if v > 0 or k != "optical"),
              f"verdict      {m['bound']}",
              "stages       " + "  ".join(f"{s} {ms(v['span_s'])} ({100 * v['share']:.0f}%)"

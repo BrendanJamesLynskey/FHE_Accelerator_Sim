@@ -7,6 +7,7 @@
     fhe-sim --hw small --optical ideal       # hypothetical precision-free optical NTT
     fhe-sim --hw small --optical hybrid --enob 14 --block 16
     fhe-sim --counts                         # operation counts per stage, no timing
+    fhe-sim --power-mode worst-case          # one fixed TDP clock instead of the power manager
     fhe-sim --trace boot.json                # open in https://ui.perfetto.dev
     fhe-sim --dump-trace t.json / --replay t.json
 """
@@ -44,6 +45,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--mac", type=float, metavar="LANES")
     p.add_argument("--tdp", type=float, metavar="W")
     p.add_argument("--no-tdp", action="store_true", help="do not enforce the TDP")
+    p.add_argument("--power-mode", choices=["dynamic", "worst-case"],
+                   help="dynamic power manager (default) or one worst-case TDP clock")
     p.add_argument("--dvfs", action="store_true", help="lower the clock when memory-bound")
     p.add_argument("--optical", choices=["off", "hybrid", "ideal"])
     p.add_argument("--enob", type=int)
@@ -63,6 +66,8 @@ def hardware_from_args(a):
                             ("mac_lanes", a.mac), ("tdp_w", a.tdp)) if v is not None}
     if a.no_tdp:
         kw["enforce_tdp"] = False
+    if a.power_mode:
+        kw["power_mode"] = a.power_mode
     if a.optical == "off":
         kw["optical"] = None
     elif a.optical in ("hybrid", "ideal") or a.enob or a.block:
