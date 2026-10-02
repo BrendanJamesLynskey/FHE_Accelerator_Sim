@@ -10,6 +10,7 @@
     fhe-sim --power-mode worst-case          # one fixed TDP clock instead of the power manager
     fhe-sim --trace boot.json                # open in https://ui.perfetto.dev
     fhe-sim --dump-trace t.json / --replay t.json
+    fhe-sim --openfhe-log calibration/openfhe_trace/sparse16.log.gz --hw cpu   # a real OpenFHE bootstrap
 """
 
 from __future__ import annotations
@@ -39,6 +40,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--min-ks", action="store_true", help="one key per BSGS loop (ARK Min-KS)")
     p.add_argument("--seeded-keys", action="store_true", help="regenerate evk 'a' halves on chip")
     p.add_argument("--otf-pt", action="store_true", help="generate DFT plaintexts on chip")
+    p.add_argument("--lazy-moddown", action="store_true",
+                   help="OpenFHE's BSGS: rotations stay in Q*P, one ModDown per DFT level")
     p.add_argument("--sram", type=int, metavar="MiB")
     p.add_argument("--hbm", type=float, metavar="GB/s")
     p.add_argument("--ntt", type=float, metavar="BFLY/CYCLE")
@@ -56,6 +59,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--trace", metavar="FILE", help="write a Chrome trace-event JSON")
     p.add_argument("--dump-trace", metavar="FILE", help="write the operation trace as JSON")
     p.add_argument("--replay", metavar="FILE", help="simulate an operation trace from JSON")
+    p.add_argument("--openfhe-log", metavar="FILE",
+                   help="simulate a kernel stream recorded from instrumented OpenFHE (.log or .log.gz)")
     p.add_argument("--json", action="store_true")
     return p
 
@@ -87,8 +92,11 @@ def main(argv=None) -> None:
     hw = hardware_from_args(a)
     params = PARAMS[a.params]
     opts = BootOptions(n_boot=a.n_boot, hoisting=not a.no_hoist, min_ks=a.min_ks,
-                       seeded_keys=a.seeded_keys, otf_plaintexts=a.otf_pt)
-    if a.replay:
+                       seeded_keys=a.seeded_keys, otf_plaintexts=a.otf_pt, lazy_moddown=a.lazy_moddown)
+    if a.openfhe_log:
+        from .openfhe_trace import log_to_trace, read_log
+        trace = log_to_trace(read_log(a.openfhe_log))
+    elif a.replay:
         trace = load_trace(a.replay)
     elif a.op == "bootstrap":
         trace = bootstrap_trace(params, opts)

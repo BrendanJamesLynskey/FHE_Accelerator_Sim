@@ -1,0 +1,330 @@
+diff --git a/src/core/include/lattice/hal/default/dcrtpoly-impl.h b/src/core/include/lattice/hal/default/dcrtpoly-impl.h
+index bd02553..29d9ea5 100644
+--- a/src/core/include/lattice/hal/default/dcrtpoly-impl.h
++++ b/src/core/include/lattice/hal/default/dcrtpoly-impl.h
+@@ -35,6 +35,7 @@
+ 
+ #ifndef LBCRYPTO_INC_LATTICE_HAL_DEFAULT_DCRTPOLY_IMPL_H
+ #define LBCRYPTO_INC_LATTICE_HAL_DEFAULT_DCRTPOLY_IMPL_H
++#include "utils/fhetrace.h"
+ 
+ #include "config_core.h"
+ 
+@@ -312,6 +313,7 @@ std::vector<DCRTPolyImpl<VecType>> DCRTPolyImpl<VecType>::PowersOfBase(uint32_t
+ 
+ template <typename VecType>
+ DCRTPolyImpl<VecType> DCRTPolyImpl<VecType>::AutomorphismTransform(uint32_t i) const {
++    fhetrace::emit("AUTO %u", (unsigned)m_vectors.size());
+     DCRTPolyImpl<VecType> result;
+     result.m_params = m_params;
+     result.m_format = m_format;
+@@ -323,6 +325,7 @@ DCRTPolyImpl<VecType> DCRTPolyImpl<VecType>::AutomorphismTransform(uint32_t i) c
+ 
+ template <typename VecType>
+ DCRTPolyImpl<VecType> DCRTPolyImpl<VecType>::AutomorphismTransform(uint32_t i, const std::vector<uint32_t>& vec) const {
++    fhetrace::emit("AUTO %u", (unsigned)m_vectors.size());
+     DCRTPolyImpl<VecType> result;
+     result.m_params = m_params;
+     result.m_format = m_format;
+@@ -360,6 +363,7 @@ DCRTPolyImpl<VecType> DCRTPolyImpl<VecType>::operator-() const {
+ 
+ template <typename VecType>
+ DCRTPolyImpl<VecType> DCRTPolyImpl<VecType>::Minus(const DCRTPolyImpl& rhs) const {
++    fhetrace::emit("EW %u", (unsigned)m_vectors.size());
+     if (m_vectors.size() != rhs.m_vectors.size())
+         OPENFHE_THROW("tower size mismatch; cannot subtract");
+     DCRTPolyImpl<VecType> tmp(m_params, m_format);
+@@ -372,6 +376,7 @@ DCRTPolyImpl<VecType> DCRTPolyImpl<VecType>::Minus(const DCRTPolyImpl& rhs) cons
+ 
+ template <typename VecType>
+ DCRTPolyImpl<VecType>& DCRTPolyImpl<VecType>::operator+=(const DCRTPolyImpl& rhs) {
++    fhetrace::emit("EW %u", (unsigned)m_vectors.size());
+     uint32_t size(m_vectors.size());
+ #pragma omp parallel for num_threads(OpenFHEParallelControls.GetThreadLimit(size))
+     for (uint32_t i = 0; i < size; ++i)
+@@ -400,6 +405,7 @@ DCRTPolyImpl<VecType>& DCRTPolyImpl<VecType>::operator+=(const NativeInteger& rh
+ 
+ template <typename VecType>
+ DCRTPolyImpl<VecType>& DCRTPolyImpl<VecType>::operator-=(const DCRTPolyImpl& rhs) {
++    fhetrace::emit("EW %u", (unsigned)m_vectors.size());
+     uint32_t size(m_vectors.size());
+ #pragma omp parallel for num_threads(OpenFHEParallelControls.GetThreadLimit(size))
+     for (uint32_t i = 0; i < size; ++i)
+@@ -692,6 +698,7 @@ void DCRTPolyImpl<VecType>::DropLastElements(size_t i) {
+ template <typename VecType>
+ void DCRTPolyImpl<VecType>::DropLastElementAndScale(const std::vector<NativeInteger>& QlQlInvModqlDivqlModq,
+                                                     const std::vector<NativeInteger>& qlInvModq) {
++    fhetrace::emit("RESCALE %u", (unsigned)m_vectors.size());
+     auto lastPoly(m_vectors.back());
+     lastPoly.SetFormat(Format::COEFFICIENT);
+     this->DropLastElement();
+@@ -892,6 +899,7 @@ DCRTPolyImpl<VecType> DCRTPolyImpl<VecType>::ApproxSwitchCRTBasis(
+     DCRTPolyImpl<VecType> ans(paramsP, m_format, true);
+     uint32_t sizeQ = (m_vectors.size() > paramsQ->GetParams().size()) ? paramsQ->GetParams().size() : m_vectors.size();
+     uint32_t sizeP = ans.m_vectors.size();
++    fhetrace::emit("BCONV %u %u", sizeQ, sizeP);
+ #if defined(HAVE_INT128) && (NATIVEINT == 64) && !defined(WITH_REDUCED_NOISE) && \
+     (defined(WITH_OPENMP) || (defined(__clang__) && !defined(WITH_NATIVEOPT)))
+     uint32_t ringDim = m_params->GetRingDimension();
+@@ -973,6 +981,7 @@ DCRTPolyImpl<VecType> DCRTPolyImpl<VecType>::ApproxModDown(
+     DCRTPolyImpl<VecType> partP(paramsP, m_format, true);
+     uint32_t sizeP = paramsP->GetParams().size();
+     uint32_t sizeQ = m_vectors.size() - sizeP;
++    fhetrace::emit("MODDOWN %u %u", sizeQ, sizeP);
+ 
+ #pragma omp parallel for num_threads(OpenFHEParallelControls.GetThreadLimit(sizeP))
+     for (uint32_t j = 0; j < sizeP; ++j) {
+diff --git a/src/core/include/lattice/hal/default/dcrtpoly.h b/src/core/include/lattice/hal/default/dcrtpoly.h
+index 2c5229f..0f2ffb9 100644
+--- a/src/core/include/lattice/hal/default/dcrtpoly.h
++++ b/src/core/include/lattice/hal/default/dcrtpoly.h
+@@ -35,6 +35,7 @@
+ 
+ #ifndef LBCRYPTO_INC_LATTICE_HAL_DEFAULT_DCRTPOLY_H
+ #define LBCRYPTO_INC_LATTICE_HAL_DEFAULT_DCRTPOLY_H
++#include "utils/fhetrace.h"
+ 
+ #include "lattice/hal/default/ildcrtparams.h"
+ #include "lattice/hal/default/poly.h"
+@@ -129,6 +130,7 @@ public:
+     DCRTPolyType& operator-=(const Integer& rhs) override;
+     DCRTPolyType& operator-=(const NativeInteger& rhs) override;
+     DCRTPolyType& operator*=(const DCRTPolyType& rhs) override {
++        fhetrace::emit("EW %u", (unsigned)m_vectors.size());
+         size_t size{m_vectors.size()};
+ #pragma omp parallel for num_threads(OpenFHEParallelControls.GetThreadLimit(size))
+         for (size_t i = 0; i < size; ++i)
+@@ -151,6 +153,7 @@ public:
+     DCRTPolyType Plus(const Integer& rhs) const override;
+     DCRTPolyType Plus(const std::vector<Integer>& rhs) const;
+     DCRTPolyType Plus(const DCRTPolyType& rhs) const override {
++        fhetrace::emit("EW %u", (unsigned)m_vectors.size());
+         if (m_params->GetRingDimension() != rhs.m_params->GetRingDimension())
+             OPENFHE_THROW("RingDimension mismatch");
+         if (m_format != rhs.m_format)
+@@ -172,6 +175,7 @@ public:
+     DCRTPolyType Minus(const std::vector<Integer>& rhs) const;
+ 
+     DCRTPolyType Times(const DCRTPolyType& rhs) const override {
++        fhetrace::emit("EW %u", (unsigned)m_vectors.size());
+         if (m_params->GetRingDimension() != rhs.m_params->GetRingDimension())
+             OPENFHE_THROW("RingDimension mismatch");
+         if (m_format != Format::EVALUATION || rhs.m_format != Format::EVALUATION)
+diff --git a/src/core/include/math/hal/intnat/transformnat-impl.h b/src/core/include/math/hal/intnat/transformnat-impl.h
+index 543d6b1..837e19f 100644
+--- a/src/core/include/math/hal/intnat/transformnat-impl.h
++++ b/src/core/include/math/hal/intnat/transformnat-impl.h
+@@ -31,6 +31,7 @@
+ 
+ #ifndef __TRANSFORMNAT_IMPL_H__
+ #define __TRANSFORMNAT_IMPL_H__
++#include "utils/fhetrace.h"
+ 
+ // ATTENTION: this file contains implementations of the functions
+ //            declared in math/intnat/transformnat.h and
+@@ -199,6 +200,7 @@ void NumberTheoreticTransformNat<VecType>::InverseTransformIterative(const VecTy
+ template <typename VecType>
+ void NumberTheoreticTransformNat<VecType>::ForwardTransformToBitReverseInPlace(const VecType& rootOfUnityTable,
+                                                                                VecType* element) {
++    fhetrace::emit("NTT %u", (unsigned)(element->GetLength()));
+     uint32_t n      = element->GetLength();
+     IntType modulus = element->GetModulus();
+     IntType mu      = modulus.ComputeMu();
+@@ -244,6 +246,7 @@ template <typename VecType>
+ void NumberTheoreticTransformNat<VecType>::ForwardTransformToBitReverse(const VecType& element,
+                                                                         const VecType& rootOfUnityTable,
+                                                                         VecType* result) {
++    fhetrace::emit("NTT %u", (unsigned)(element.GetLength()));
+     uint32_t n = element.GetLength();
+     if (result->GetLength() != n) {
+         OPENFHE_THROW("size of input element and size of output element not of same size");
+@@ -303,6 +306,7 @@ template <typename VecType>
+ void NumberTheoreticTransformNat<VecType>::ForwardTransformToBitReverseInPlace(const VecType& rootOfUnityTable,
+                                                                                const VecType& preconRootOfUnityTable,
+                                                                                VecType* element) {
++    fhetrace::emit("NTT %u", (unsigned)(element->GetLength()));
+     //
+     // NTT based on the Cooley-Tukey (CT) butterfly
+     // Inputs: element (vector of size n in standard ordering)
+@@ -378,6 +382,7 @@ void NumberTheoreticTransformNat<VecType>::ForwardTransformToBitReverse(const Ve
+                                                                         const VecType& rootOfUnityTable,
+                                                                         const VecType& preconRootOfUnityTable,
+                                                                         VecType* result) {
++    fhetrace::emit("NTT %u", (unsigned)(element.GetLength()));
+     uint32_t n = element.GetLength();
+ 
+     if (result->GetLength() != n) {
+@@ -439,6 +444,7 @@ template <typename VecType>
+ void NumberTheoreticTransformNat<VecType>::InverseTransformFromBitReverseInPlace(const VecType& rootOfUnityInverseTable,
+                                                                                  const IntType& cycloOrderInv,
+                                                                                  VecType* element) {
++    fhetrace::emit("INTT %u", (unsigned)(element->GetLength()));
+     uint32_t n      = element->GetLength();
+     IntType modulus = element->GetModulus();
+     IntType mu      = modulus.ComputeMu();
+@@ -512,6 +518,7 @@ template <typename VecType>
+ void NumberTheoreticTransformNat<VecType>::InverseTransformFromBitReverseInPlace(
+     const VecType& rootOfUnityInverseTable, const VecType& preconRootOfUnityInverseTable, const IntType& cycloOrderInv,
+     const IntType& preconCycloOrderInv, VecType* element) {
++    fhetrace::emit("INTT %u", (unsigned)(element->GetLength()));
+     //
+     // INTT based on the Gentleman-Sande (GS) butterfly
+     // Inputs: element (vector of size n in bit-reversed ordering)
+diff --git a/src/core/include/utils/fhetrace.h b/src/core/include/utils/fhetrace.h
+new file mode 100644
+index 0000000..1e47077
+--- /dev/null
++++ b/src/core/include/utils/fhetrace.h
+@@ -0,0 +1,43 @@
++// fhetrace: a minimal kernel-stream tracer added for FHE_Accelerator_Sim (not part of OpenFHE).
++// Active only when the environment has FHETRACE=<file> and FHETRACE_ON=1. Each shared library
++// gets its own FILE*, so the file is opened unbuffered in append mode: lines from every library
++// land in program order (run single-threaded: OMP_NUM_THREADS=1).
++#ifndef OPENFHE_FHETRACE_H
++#define OPENFHE_FHETRACE_H
++#include <cstdio>
++#include <cstdlib>
++#include <mutex>
++namespace fhetrace {
++inline FILE* out() {
++    static FILE* f = []() -> FILE* {
++        const char* p = std::getenv("FHETRACE");
++        if (!p)
++            return nullptr;
++        FILE* g = std::fopen(p, "a");
++        if (g)
++            std::setvbuf(g, nullptr, _IONBF, 0);
++        return g;
++    }();
++    return f;
++}
++inline bool on() {
++    const char* e = std::getenv("FHETRACE_ON");
++    return out() != nullptr && e != nullptr && e[0] == '1';
++}
++template <class... A>
++inline void emit(const char* fmt, A... a) {
++    if (!on())
++        return;
++    static std::mutex m;
++    std::lock_guard<std::mutex> g(m);
++    char buf[256];
++    int n;
++    if constexpr (sizeof...(A) == 0)
++        n = std::snprintf(buf, sizeof(buf) - 1, "%s", fmt);
++    else
++        n = std::snprintf(buf, sizeof(buf) - 1, fmt, a...);
++    buf[n] = '\n';
++    std::fwrite(buf, 1, n + 1, out());
++}
++}  // namespace fhetrace
++#endif
+diff --git a/src/pke/lib/keyswitch/keyswitch-hybrid.cpp b/src/pke/lib/keyswitch/keyswitch-hybrid.cpp
+index a33e422..4932f69 100644
+--- a/src/pke/lib/keyswitch/keyswitch-hybrid.cpp
++++ b/src/pke/lib/keyswitch/keyswitch-hybrid.cpp
+@@ -34,6 +34,7 @@
+  * Appendix of https://eprint.iacr.org/2021/204 for details.
+  */
+ 
++#include "utils/fhetrace.h"
+ #include "ciphertext.h"
+ #include "key/evalkeyrelin.h"
+ #include "key/privatekey.h"
+@@ -329,6 +330,7 @@ std::shared_ptr<std::vector<DCRTPoly>> KeySwitchHYBRID::EvalKeySwitchPrecomputeC
+         numPartQl = cryptoParams->GetNumberOfQPartitions();
+ 
+     auto result = std::make_shared<std::vector<DCRTPoly>>(numPartQl);
++    fhetrace::emit("MODUP %u %u %u", sizeQl, sizeP, numPartQl);
+ 
+     // Digit decomposition
+     // Zero-padding and split
+@@ -412,6 +414,7 @@ std::shared_ptr<std::vector<DCRTPoly>> KeySwitchHYBRID::EvalFastKeySwitchCoreExt
+ 
+     const auto& av = evalKey->GetAVector();
+     const auto& bv = evalKey->GetBVector();
++    fhetrace::emit("KS %p %u %u %u", static_cast<const void*>(evalKey.get()), limit, sizeQlP, sizeQl);
+ 
+     auto result = std::make_shared<std::vector<DCRTPoly>>();
+     result->reserve(2);
+diff --git a/src/pke/lib/scheme/ckksrns/ckksrns-fhe.cpp b/src/pke/lib/scheme/ckksrns/ckksrns-fhe.cpp
+index 96c2363..ca7e775 100644
+--- a/src/pke/lib/scheme/ckksrns/ckksrns-fhe.cpp
++++ b/src/pke/lib/scheme/ckksrns/ckksrns-fhe.cpp
+@@ -29,6 +29,7 @@
+ // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ //==================================================================================
+ 
++#include "utils/fhetrace.h"
+ #include "ciphertext.h"
+ #include "cryptocontext.h"
+ #include "key/evalkeyrelin.h"
+@@ -428,6 +429,7 @@ void FHECKKSRNS::EvalBootstrapPrecompute(const CryptoContextImpl<DCRTPoly>& cc,
+ 
+ Ciphertext<DCRTPoly> FHECKKSRNS::EvalBootstrap(ConstCiphertext<DCRTPoly>& ciphertext, uint32_t numIterations,
+                                                uint32_t precision) const {
++    fhetrace::emit("S modraise");
+     uint32_t slots = ciphertext->GetSlots();
+     auto& p        = GetBootPrecom(slots);
+ 
+@@ -661,6 +663,7 @@ Ciphertext<DCRTPoly> FHECKKSRNS::EvalBootstrap(ConstCiphertext<DCRTPoly>& cipher
+         algo->ModReduceInternalInPlace(raised, compositeDegree);
+ 
+         // only one linear transform is needed as the other one can be derived
++        fhetrace::emit("S cts");
+         auto ctxtEnc =
+             (isLTBootstrap) ? EvalLinearTransform(p.m_U0hatTPre, raised) : EvalCoeffsToSlots(p.m_U0hatTPreFFT, raised);
+ 
+@@ -688,6 +691,7 @@ Ciphertext<DCRTPoly> FHECKKSRNS::EvalBootstrap(ConstCiphertext<DCRTPoly>& cipher
+         //------------------------------------------------------------------------------
+ 
+         // Evaluate Chebyshev series for the sine wave
++        fhetrace::emit("S evalmod");
+         ctxtEnc  = algo->EvalChebyshevSeries(ctxtEnc, coefficients, coeffLowerBound, coeffUpperBound);
+         ctxtEncI = algo->EvalChebyshevSeries(ctxtEncI, coefficients, coeffLowerBound, coeffUpperBound);
+ 
+@@ -729,7 +733,9 @@ Ciphertext<DCRTPoly> FHECKKSRNS::EvalBootstrap(ConstCiphertext<DCRTPoly>& cipher
+             algo->ModReduceInternalInPlace(ctxtEnc, compositeDegree);
+ 
+         // Only one linear transform is needed
++        fhetrace::emit("S stc");
+         ctxtDec = (isLTBootstrap) ? EvalLinearTransform(p.m_U0Pre, ctxtEnc) : EvalSlotsToCoeffs(p.m_U0PreFFT, ctxtEnc);
++        fhetrace::emit("S post");
+     }
+     else {
+         //------------------------------------------------------------------------------
+@@ -754,6 +760,8 @@ Ciphertext<DCRTPoly> FHECKKSRNS::EvalBootstrap(ConstCiphertext<DCRTPoly>& cipher
+ 
+         algo->ModReduceInternalInPlace(raised, compositeDegree);
+ 
++        fhetrace::emit("S cts");
++
+         auto ctxtEnc =
+             (isLTBootstrap) ? EvalLinearTransform(p.m_U0hatTPre, raised) : EvalCoeffsToSlots(p.m_U0hatTPreFFT, raised);
+ 
+@@ -783,6 +791,7 @@ Ciphertext<DCRTPoly> FHECKKSRNS::EvalBootstrap(ConstCiphertext<DCRTPoly>& cipher
+         //------------------------------------------------------------------------------
+ 
+         // Evaluate Chebyshev series for the sine wave
++        fhetrace::emit("S evalmod");
+         ctxtEnc = algo->EvalChebyshevSeries(ctxtEnc, coefficients, coeffLowerBound, coeffUpperBound);
+ 
+         // Double-angle iterations
+@@ -814,7 +823,9 @@ Ciphertext<DCRTPoly> FHECKKSRNS::EvalBootstrap(ConstCiphertext<DCRTPoly>& cipher
+             algo->ModReduceInternalInPlace(ctxtEnc, compositeDegree);
+ 
+         // linear transform for decoding
++        fhetrace::emit("S stc");
+         ctxtDec = (isLTBootstrap) ? EvalLinearTransform(p.m_U0Pre, ctxtEnc) : EvalSlotsToCoeffs(p.m_U0PreFFT, ctxtEnc);
++        fhetrace::emit("S post");
+         cc->EvalAddInPlaceNoCheck(ctxtDec, cc->EvalRotate(ctxtDec, slots));
+     }
+ 
+@@ -2722,6 +2733,7 @@ Plaintext FHECKKSRNS::MakeAuxPlaintext(const CryptoContextImpl<DCRTPoly>& cc, co
+ 
+ Ciphertext<DCRTPoly> FHECKKSRNS::EvalMultExt(ConstCiphertext<DCRTPoly> ciphertext, ConstPlaintext plaintext) {
+     auto pt = plaintext->GetElement<DCRTPoly>();
++    fhetrace::emit("PTMUL %p %u", static_cast<const void*>(plaintext.get()), (unsigned)pt.GetNumOfElements());
+     pt.SetFormat(Format::EVALUATION);
+     auto result = ciphertext->Clone();
+     for (auto& c : result->GetElements())

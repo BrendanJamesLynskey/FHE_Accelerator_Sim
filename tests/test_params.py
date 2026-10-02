@@ -42,7 +42,7 @@ def test_hand_formulas():
 
 def test_evalmod_shape():
     assert (ARK.evalmod_baby, ARK.evalmod_giant) == (8, 8)                  # degree 59
-    assert (PARAMS["openfhe-sparse"].evalmod_baby, PARAMS["openfhe-sparse"].evalmod_giant) == (16, 8)
+    assert (PARAMS["openfhe-sparse"].evalmod_baby, PARAMS["openfhe-sparse"].evalmod_giant) == (16, 6)   # degree 88
     assert (PARAMS["small"].evalmod_baby, PARAMS["small"].evalmod_giant) == (4, 4)
 
 
@@ -81,7 +81,7 @@ def test_hmult_and_hrot_kernel_counts():
 def dft_formulas(log_slots, levels):
     rots = pmults = keys = 0
     for k in dft_split(log_slots, levels):
-        d = 2 ** (k + 1) - 1
+        d = min(2 ** (k + 1) - 1, 2 ** log_slots)    # a slots x slots matrix has at most `slots` diagonals
         n1 = min(2 ** math.ceil((k + 1) / 2), d)
         n2 = math.ceil(d / n1)
         rots += (n1 - 1) + (n2 - 1)
@@ -109,12 +109,22 @@ def test_bootstrap_counts_match_closed_forms(name):
     assert s["modraise"]["hrot"] == subsum
 
 
-@pytest.mark.parametrize("name", ["ark", "lattigo", "gpu100x", "small", "openfhe-sparse"])
+@pytest.mark.parametrize("name", ["ark", "lattigo", "gpu100x", "small"])
 def test_levels_consumed(name):
+    """Closed form for a power-of-two number of giant blocks g (a full combine tree)."""
     p = PARAMS[name]
     b, g, r = p.evalmod_baby, p.evalmod_giant, p.double_angle
+    assert g & (g - 1) == 0
     evalmod = 2 + math.ceil(math.log2(b - 1)) + math.ceil(math.log2(g)) + r
     assert p.L - output_level(bootstrap_trace(p)) == p.cts_levels + evalmod + p.stc_levels
+
+
+@pytest.mark.parametrize("name,openfhe_depth", [("openfhe-sparse", 16), ("openfhe-full14", 20)])
+def test_levels_consumed_match_openfhe(name, openfhe_depth):
+    """OpenFHE's FHECKKSRNS::GetBootstrapDepth for the same configuration (recorded in the
+    trace headers in calibration/openfhe_trace): degree-88 EvalMod with 6 double angles."""
+    p = PARAMS[name]
+    assert p.L - output_level(bootstrap_trace(p)) == openfhe_depth
 
 
 def test_not_enough_levels_is_an_error():

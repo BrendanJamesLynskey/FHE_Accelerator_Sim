@@ -1,0 +1,10 @@
+cmake_minimum_required(VERSION 3.16)
+project(boot_trace CXX)
+set(CMAKE_CXX_STANDARD 17)
+find_package(OpenFHE CONFIG REQUIRED)
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${OpenFHE_CXX_FLAGS}")
+include_directories(${OPENMP_INCLUDES} ${OpenFHE_INCLUDE} ${OpenFHE_INCLUDE}/third-party/include
+                    ${OpenFHE_INCLUDE}/core ${OpenFHE_INCLUDE}/pke ${OpenFHE_INCLUDE}/binfhe)
+link_directories(${OpenFHE_LIBDIR} ${OPENMP_LIBRARIES})
+add_executable(boot_trace boot_trace.cpp)
+target_link_libraries(boot_trace ${OpenFHE_SHARED_LIBRARIES})

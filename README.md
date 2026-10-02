@@ -46,9 +46,14 @@ separate, and a test ladder runs from hand formulas to a JavaScript twin.
 * A **JavaScript port** (`web/sim_engine.js`) that runs live in
   [deck 03](https://brendanjameslynskey.github.io/FHESim_03_Simulating_an_FHE_Accelerator/)
   and matches the Python **bit for bit**.
-* **64 tests:** parameter sizes, closed-form operation counts, invariants, analytic
+* **Real OpenFHE traces:** two bootstraps recorded from OpenFHE v1.5.1, which was
+  instrumented with a 78-line patch to log every NTT, base conversion, key switch,
+  automorphism, rescale and plaintext multiply. The model is checked against them
+  stage by stage, and the streams replay on the engine (`fhe-sim --openfhe-log`).
+* **74 tests:** parameter sizes, closed-form operation counts, invariants, analytic
   queueing checks, behaviour, power (both power modes), Hypothesis properties,
-  precision, calibration, and JS ↔ Python parity.
+  precision, calibration, the model against recorded OpenFHE streams, and
+  JS ↔ Python parity.
 
 ---
 
@@ -58,7 +63,7 @@ separate, and a test ladder runs from hand formulas to a JavaScript twin.
 python -m venv .venv
 source .venv/bin/activate
 pip install -e .[dev]
-pytest                                        # 64 tests, about 20 seconds
+pytest                                        # 74 tests, about 20 seconds
 
 fhe-sim                                       # ARK-like parameters on an ARK-class digital design
 fhe-sim --counts                              # operation and byte counts per stage, no timing
@@ -71,6 +76,8 @@ fhe-sim --dvfs                                # lower the clock when memory-boun
 fhe-sim --ntt 16384 --mac 32768 --tdp 150 --power-mode worst-case   # vs the default power manager
 fhe-sim --trace boot.json                     # open in https://ui.perfetto.dev
 fhe-sim --dump-trace t.json; fhe-sim --replay t.json
+fhe-sim --openfhe-log calibration/openfhe_trace/sparse16.log.gz --hw cpu   # replay a real OpenFHE bootstrap
+fhe-sim --lazy-moddown                        # OpenFHE's BSGS split: fewer NTTs, more keys
 
 python examples/results.py                    # regenerate every number in this README and the decks
 python examples/calibrate_openfhe.py          # the OpenFHE calibration
@@ -102,10 +109,11 @@ power        avg 82 W  peak 176 W (TDP 250 W)  1139.1 mJ/bootstrap  energy: stat
 | `src/fhe_sim/metrics.py` | Latency, stage breakdown, utilisation, bound attribution, hot-spots, traffic by class, energy and power |
 | `src/fhe_sim/precision.py` | Functional model of an exact modular NTT on an analogue FFT engine (digit planes, Bluestein, ADC) |
 | `src/fhe_sim/trace.py` | Chrome trace-event export for Perfetto |
+| `src/fhe_sim/openfhe_trace.py` | Reads kernel streams recorded from instrumented OpenFHE: per-stage counts, conversion to a replayable trace |
 | `src/fhe_sim/search.py` | Analytic lower bound, SRAM sweep, bisection for minimum SRAM, parallel design sweep, Pareto front |
 | `src/fhe_sim/cli.py` | The `fhe-sim` command |
 | `web/sim_engine.js` | The browser port (with a minimal SimPy core) used in deck 03 |
-| `calibration/` | OpenFHE measurements and the scripts that produced them |
+| `calibration/` | OpenFHE timing measurements and scripts; `openfhe_trace/`: the OpenFHE patch, the trace driver and two recorded bootstraps |
 | `examples/results.py` | Generates `examples/results.md`, the source of every quoted number |
 
 ### Selected results (from `examples/results.md`)
@@ -161,12 +169,42 @@ power stays at or under the TDP in both modes.
 |----------|------------------------------|-----------|-------|
 | HMult, N=2^16, 24 limbs, dnum 4 | 352.6 ms | 352.6 ms | fitted |
 | HRotate, same parameters | 324.8 ms | 292.5 ms | −10% |
-| Bootstrap, N=2^16, 8 slots, dnum 3 | 12,113 ms | 9,283 ms | −23% |
+| Bootstrap, N=2^16, 8 slots, dnum 3 (scheme model) | 12,113 ms | 8,473 ms | −30% |
+| Same bootstrap, OpenFHE's recorded kernel stream replayed | 12,113 ms | 10,759 ms | −11% |
 
 One parameter was fitted (0.18 modular operations per cycle per unit at 3.4 GHz);
-the other two rows are predictions. Full-slot bootstrapping at N=2^16 could not be
-measured: OpenFHE's keys and precomputed plaintexts exceeded the memory cap on this
-15 GB machine.
+the other rows are predictions. The scheme model under-predicts the bootstrap mainly
+because OpenFHE rescales copies of each input before every multiplication (see
+below). Replaying the recorded stream removes that gap; most of the remaining −11%
+is element-wise work the tracer does not log. Full-slot bootstrapping at N=2^16
+could not be measured or recorded: OpenFHE's keys and precomputed plaintexts
+exceeded the memory cap on this 15 GB machine.
+
+### Checked against real OpenFHE bootstraps
+
+`calibration/openfhe_trace/full14.log.gz` (N=2^14, 8,192 slots, level budget {3,3},
+dnum 3) against the model at the same parameters (`examples/results.md`, §17):
+
+| Stage | Rotations: OpenFHE / model / model with OpenFHE's BSGS | NTT + iNTT limbs | Key GB requested |
+|-------|------|------|------|
+| CoeffToSlot | 46 / 35 / 51 | 2,419 / 5,151 / 2,025 | 1.45 / 1.13 / 1.64 |
+| EvalMod (HMults 48 / 56) | — | 20,411 / 11,816 / 11,816 | 1.05 / 1.28 / 1.28 |
+| SlotToCoeff | 45 / 34 / 50 | 1,025 / 2,494 / 854 | 0.57 / 0.43 / 0.63 |
+
+* **Exact where the algorithms agree.** Bootstrap depth matches (20, and 16 for the
+  N=2^16 recording). The N=2^16 SubSum's 12 rotations match on keys and key bytes
+  exactly, and on transforms to within 3%.
+* **The DFT split.** OpenFHE keeps rotations in the Q·P basis and uses more baby
+  steps (16 against 8 per radix-2^5 level). The `lazy_moddown` option models this
+  and lands within 20%. On the ARK-class accelerator it is a bad trade: a third
+  fewer NTTs, but 28% more key traffic and 42% more time.
+* **EvalMod.** OpenFHE's FLEXIBLEAUTO scaling rescales input copies before every
+  multiplication: 542 polynomial rescales for 48 HMults, against 2 per HMult in the
+  model. That is a library policy an accelerator compiler would not copy; the
+  difference is tested, not modelled.
+* **Corrected from the trace.** OpenFHE's EvalMod is degree 88 with 6 double-angle
+  steps (the `openfhe-sparse` preset had guessed 119 and 3). A DFT level has at most
+  `slots` diagonals (8 for 8 slots; the model had used 15).
 
 Published results are **order-of-magnitude references only**, with their own
 parameters. The 100x GPU work (Jung et al., TCHES 2021) bootstraps N=2^16, L=34,
@@ -195,10 +233,11 @@ Anything that can emit this can drive the engine:
   conversions are explicit. A pass or translator at that level could emit this
   format. **Not implemented here.** HEIR's dialects and pipelines change quickly,
   so check its documentation.
-* **An instrumented library.** openfhe-python installs from pip and was used for
-  calibration, but its Python API does not expose the kernel stream. A real
-  OpenFHE trace would need C++ instrumentation. **Not done here**, and the decks
-  say so.
+* **An instrumented library.** Done for OpenFHE v1.5.1: `calibration/openfhe_trace`
+  holds the 78-line patch, the C++ driver, two recorded bootstraps and build steps.
+  `openfhe_trace.log_to_trace` turns a log into this format. Operations are
+  serialised in program order (OpenFHE ran single-threaded), keys and plaintexts
+  keep their real identities, and ciphertext identities are not recorded.
 
 ---
 

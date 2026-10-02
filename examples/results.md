@@ -9,7 +9,8 @@ All hardware coefficients are illustrative.
 | ark | 2^16 | 23 | 4 | 6 | 24.0 | 120.0 | 1570 | 16 | 7 | 203 |
 | lattigo | 2^16 | 24 | 5 | 5 | 25.0 | 150.0 | 1560 | 16 | 8 | 203 |
 | gpu100x | 2^16 | 34 | 5 | 7 | 35.0 | 210.0 | 2180 | 16 | 18 | 203 |
-| openfhe-sparse | 2^16 | 18 | 3 | 7 | 19.0 | 78.0 | 1542 | 14 | 4 | 87 |
+| openfhe-sparse | 2^16 | 18 | 3 | 7 | 19.0 | 78.0 | 1542 | 16 | 2 | 78 |
+| openfhe-full14 | 2^14 | 30 | 3 | 11 | 7.8 | 31.5 | 2490 | 20 | 10 | 187 |
 | small | 2^12 | 11 | 3 | 4 | 0.8 | 3.0 | 850 | 11 | 0 | 143 |
 
 ## 2. One HMult and one HRotate at the top level (ark set)
@@ -51,6 +52,7 @@ analytic lower bound 10.01 ms
 |---|---|---|---|---|---|
 | baseline (hoisted BSGS) | 13.94 ms | 6.74 | 12.44 | 1139 | memory-bound |
 | no hoisting | 14.02 ms | 6.74 | 12.44 | 1162 | memory-bound |
+| OpenFHE's BSGS (lazy ModDown) | 19.77 ms | 8.60 | 17.50 | 1511 | memory-bound |
 | + Min-KS | 8.51 ms | 1.15 | 5.24 | 726 | memory-bound |
 | + Min-KS + seeded keys | 8.86 ms | 0.58 | 4.62 | 738 | MAC-bound |
 | + Min-KS + seeded keys + OTF plaintexts | 7.19 ms | 0.58 | 0.78 | 607 | MAC-bound |
@@ -61,6 +63,7 @@ analytic lower bound 10.01 ms
 |---|---|---|---|---|---|
 | baseline (hoisted BSGS) | 17.46 ms | 6.74 | 12.44 | 1280 | NTT-bound |
 | no hoisting | 20.14 ms | 6.74 | 12.44 | 1407 | NTT-bound |
+| OpenFHE's BSGS (lazy ModDown) | 18.99 ms | 8.60 | 17.50 | 1479 | NTT-bound |
 | + Min-KS | 21.54 ms | 1.15 | 5.24 | 1247 | NTT-bound |
 | + Min-KS + seeded keys | 22.07 ms | 0.58 | 4.62 | 1266 | NTT-bound |
 | + Min-KS + seeded keys + OTF plaintexts | 26.65 ms | 0.58 | 0.78 | 1385 | NTT-bound |
@@ -221,13 +224,14 @@ Energy question only: the TDP is not enforced in this search, so the clock stays
 
 ```
 fitted rate: 0.1802 modular ops per cycle per unit = 0.613 G/s
-quantity                           OpenFHE   simulated    error
-HMult (fitted)                     352.6ms     352.6ms       0%
-HRotate (predicted)                324.8ms     292.5ms     -10%
-Sparse bootstrap (predicted)     12112.7ms    9282.8ms     -23%
+quantity                                     OpenFHE   simulated    error
+HMult (fitted)                               352.6ms     352.6ms       0%
+HRotate (predicted)                          324.8ms     292.5ms     -10%
+Sparse bootstrap (predicted)               12112.7ms    8473.3ms     -30%
+Same bootstrap, OpenFHE trace replayed     12112.7ms   10758.6ms     -11%
 ```
 
-One ARK-set bootstrap (203 HE ops, 1153 kernels): Python/SimPy 70 ms, JavaScript (node) 12 ms of wall-clock time.
+One ARK-set bootstrap (203 HE ops, 1153 kernels): Python/SimPy 72 ms, JavaScript (node) 13 ms of wall-clock time.
 
 ## 13. The dnum trade-off (N = 2^16, L = 23, top level; log PQ uses 50-bit scaling and 60-bit special primes)
 
@@ -279,3 +283,26 @@ One ARK-set bootstrap (203 HE ops, 1153 kernels): Python/SimPy 70 ms, JavaScript
 | 4x NTT + MAC, TDP 150 W | 11.62 ms | 53% | 95 W | power-bound | 6.41 ms | 99% | 150 W | MAC-bound |
 | 4x NTT + MAC, TDP 100 W | cannot run | - | - | TDP below worst case at s_min | 6.68 ms | 92% | 100 W | power-bound |
 | 4x NTT + MAC, TDP 80 W | cannot run | - | - | TDP below worst case at s_min | 7.73 ms | 89% | 80 W | power-bound |
+
+## 17. The scheme model against recorded OpenFHE v1.5.1 bootstraps (calibration/openfhe_trace)
+
+
+**full14.log.gz**: N = 16384, 8192 slots, 31 limbs, dnum 3; OpenFHE bootstrap depth 20, model 20
+
+| stage | rotations (OpenFHE / model / model lazy) | HMults (OpenFHE / model) | distinct rotation keys | NTT + iNTT limbs | key GB requested | OpenFHE polynomial rescales |
+|---|---|---|---|---|---|---|
+| modraise | 0 / 0 / 0 | 0 / 0 | 0 / 0 / 0 | 130 / 64 / 64 | 0.00 / 0.00 / 0.00 | 4 |
+| cts | 46 / 35 / 51 | 0 / 0 | 43 / 35 / 51 | 2,419 / 5,151 / 2,025 | 1.45 / 1.13 / 1.64 | 8 |
+| evalmod | 0 / 0 / 0 | 48 / 56 | 0 / 1 / 1 | 20,411 / 11,816 / 11,816 | 1.05 / 1.28 / 1.28 | 542 |
+| stc | 45 / 34 / 50 | 0 / 0 | 44 / 34 / 50 | 1,025 / 2,494 / 854 | 0.57 / 0.43 / 0.63 | 4 |
+
+**sparse16.log.gz**: N = 65536, 8 slots, 19 limbs, dnum 3; OpenFHE bootstrap depth 16, model 16
+
+| stage | rotations (OpenFHE / model / model lazy) | HMults (OpenFHE / model) | distinct rotation keys | NTT + iNTT limbs | key GB requested | OpenFHE polynomial rescales |
+|---|---|---|---|---|---|---|
+| modraise | 12 / 12 / 12 | 0 / 0 | 12 / 12 / 12 | 1,642 / 1,600 / 1,600 | 0.98 / 0.98 / 0.98 | 4 |
+| cts | 8 / 5 / 5 | 0 / 0 | 8 / 5 / 5 | 311 / 527 / 423 | 0.63 / 0.41 / 0.41 | 2 |
+| evalmod | 0 / 0 / 0 | 24 / 28 | 0 / 1 / 1 | 5,801 / 3,189 / 3,189 | 1.03 / 1.27 / 1.27 | 272 |
+| stc | 7 / 4 / 4 | 0 / 0 | 7 / 4 / 4 | 44 / 118 / 74 | 0.08 / 0.05 / 0.05 | 0 |
+
+Sparse bootstrap on the CPU-like model: measured 12.11 s; scheme model 8.48 s (-30%); replayed OpenFHE trace 10.77 s (-11%).

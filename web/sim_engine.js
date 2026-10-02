@@ -36,7 +36,9 @@
         'lattigo': { name: 'Lattigo-like (N=2^16, L=24, dnum=5)', logN: 16, L: 24, dnum: 5 },
         'gpu100x': { name: '100x GPU (N=2^16, L=34, dnum=5)', logN: 16, L: 34, dnum: 5 },
         'openfhe-sparse': { name: 'OpenFHE sparse (N=2^16, L=18, dnum=3, 8 slots)', logN: 16, L: 18, dnum: 3, qBits: 59,
-                            logSlots: 3, ctsLevels: 1, stcLevels: 1, evalmodDegree: 119, doubleAngle: 3 },
+                            logSlots: 3, ctsLevels: 1, stcLevels: 1, evalmodDegree: 88, doubleAngle: 6 },
+        'openfhe-full14': { name: 'OpenFHE full slots (N=2^14, L=30, dnum=3)', logN: 14, L: 30, dnum: 3, qBits: 59,
+                            ctsLevels: 3, stcLevels: 3, evalmodDegree: 88, doubleAngle: 6 },
         'small': { name: 'small test set (N=2^12, L=11, dnum=3)', logN: 12, L: 11, dnum: 3, ctsLevels: 2, stcLevels: 2,
                    evalmodDegree: 15, doubleAngle: 1 },
     };
@@ -102,6 +104,34 @@
             const ks = [K('auto', w, 2 * w), ...B.seedKernels(lev), ...ksTail(p, lev)];
             return B.emit('hrot', lev, [x, digits], lev, ks, B.key(kid, lev));
         };
+        B.extend = x => {
+            const lev = B.lvl(x), N = p.N, l = lev + 1;
+            return B.emit('extend', lev, [x], lev, [kMac(2 * l * N)], null, [], 2 * (l + p.k) * N * 8);
+        };
+        B.hrotHoistedExt = (x, digits, kid) => {
+            const lev = B.lvl(x), N = p.N, l = lev + 1, k = p.k, b = p.beta(lev);
+            const w = (l + b * (l + k)) * N;
+            const ks = [K('auto', w, 2 * w), ...B.seedKernels(lev), ...ksTail(p, lev).slice(0, 1)];
+            return B.emit('hrot', lev, [x, digits], lev, ks, B.key(kid, lev), [], 2 * (l + k) * N * 8);
+        };
+        B.pmacExt = (xs, ptIds, moddown) => {
+            const lev = B.lvl(...xs), N = p.N, l = lev + 1, m = xs.length, lk = l + p.k;
+            let kern = [kMac(2 * lk * N * m + 2 * lk * N * (m - 1))], pts;
+            if (o.otfPlaintexts) { kern = [kNtt(lk * m, N), kMac(lk * N * m), ...kern]; pts = ptIds.map(id => [id, N * 8]); }
+            else pts = ptIds.map(id => [id, lk * N * 8]);
+            const down = moddown ? ksTail(p, lev).slice(1) : [];
+            return B.emit('pmac', lev, xs, lev, [...kern, ...down], null, pts, moddown ? undefined : 2 * lk * N * 8);
+        };
+        B.hrotExt = (x, kid) => {
+            const lev = B.lvl(x), N = p.N, l = lev + 1;
+            const ks = [K('auto', 2 * l * N, 4 * l * N), ...ksModup(p, lev), ...B.seedKernels(lev), ...ksTail(p, lev).slice(0, 1)];
+            return B.emit('hrot', lev, [x], lev, ks, B.key(kid, lev), [], 2 * (l + p.k) * N * 8);
+        };
+        B.addExt = xs => {
+            const lev = B.lvl(...xs), N = p.N, lk = lev + 1 + p.k;
+            const kern = [kMac(2 * lk * N * Math.max(1, xs.length - 1)), ...ksTail(p, lev).slice(1), ...rescaleKernels(p, lev)];
+            return B.emit('add', lev, xs, lev - 1, kern);
+        };
         B.pmac = (xs, ptIds) => {
             const lev = B.lvl(...xs), N = p.N, l = lev + 1, m = xs.length;
             let kern = [kMac(2 * l * N * m + 2 * l * N * (m - 1))], pts;
@@ -127,10 +157,22 @@
         B.dft = (x, prefix, nLevels) => {
             const split = dftSplit(p.slotsLog, nLevels);
             for (let j = 0; j < split.length; j++) {
-                const k = split[j], d = 2 ** (k + 1) - 1, n1 = Math.min(2 ** cdiv(k + 1, 2), d), n2 = cdiv(d, n1), tag = `${prefix}${j}`;
+                const k = split[j], d = Math.min(2 ** (k + 1) - 1, 2 ** p.slotsLog), tag = `${prefix}${j}`;
+                const lazy = o.lazyModdown && o.hoisting && !o.minKs;
+                let n1;
+                if (lazy && d === p.slots) {
+                    const sl = p.slots, c = Math.floor(Math.sqrt(sl - 1)) + 1;     // ceil(sqrt(slots)), exact for these sizes
+                    n1 = sl > 1 ? Math.min(2 ** (c.toString(2).length - 1 + 1), d) : 1;
+                } else if (lazy) n1 = Math.min(2 ** (Math.floor(k / 2) + 1 + (d > 7 ? 1 : 0)), d);
+                else n1 = Math.min(2 ** cdiv(k + 1, 2), d);
+                const n2 = cdiv(d, n1);
                 const babies = [x];
                 if (n1 > 1) {
                     if (o.minKs) { for (let i = 1; i < n1; i++) babies.push(B.hrot(babies[babies.length - 1], `${tag}.b`)); }
+                    else if (o.hoisting && o.lazyModdown) {
+                        const dig = B.modup(x); babies[0] = B.extend(x);
+                        for (let i = 1; i < n1; i++) babies.push(B.hrotHoistedExt(x, dig, `${tag}.b${i}`));
+                    }
                     else if (o.hoisting) { const dig = B.modup(x); for (let i = 1; i < n1; i++) babies.push(B.hrotHoisted(x, dig, `${tag}.b${i}`)); }
                     else { for (let i = 1; i < n1; i++) babies.push(B.hrot(x, `${tag}.b${i}`)); }
                 }
@@ -138,12 +180,16 @@
                 for (let g = 0; g < n2; g++) {
                     const m = Math.min(n1, d - g * n1), ids = [];
                     for (let i = 0; i < m; i++) ids.push(`${tag}.d${g}.${i}`);
-                    inners.push(B.pmac(babies.slice(0, m), ids));
+                    inners.push(lazy && n1 > 1 ? B.pmacExt(babies.slice(0, m), ids, g > 0) : B.pmac(babies.slice(0, m), ids));
                 }
                 if (o.minKs) {
                     let acc = inners[inners.length - 1];
                     for (let g = n2 - 2; g >= 0; g--) acc = B.add([B.hrot(acc, `${tag}.g`), inners[g]], g === 0);
                     x = n2 > 1 ? acc : B.add([acc], true);
+                } else if (lazy && n1 > 1) {
+                    const parts = [inners[0]];
+                    for (let g = 1; g < n2; g++) parts.push(B.hrotExt(inners[g], `${tag}.g${g}`));
+                    x = B.addExt(parts);
                 } else {
                     const parts = [inners[0]];
                     for (let g = 1; g < n2; g++) parts.push(B.hrot(inners[g], `${tag}.g${g}`));
@@ -185,7 +231,7 @@
         return B;
     }
     function bootOptions(o) {
-        return Object.assign({ nBoot: 1, hoisting: true, minKs: false, seededKeys: false, otfPlaintexts: false }, o || {});
+        return Object.assign({ nBoot: 1, hoisting: true, minKs: false, seededKeys: false, otfPlaintexts: false, lazyModdown: false }, o || {});
     }
     function bootstrapTrace(p, opts) {
         const o = bootOptions(opts), B = Builder(p, o);
@@ -654,7 +700,7 @@
     }
 
     // ── convenience for the parity test and the deck ─────────────────
-    const camel = o => { const m = { n_boot: 'nBoot', min_ks: 'minKs', seeded_keys: 'seededKeys', otf_plaintexts: 'otfPlaintexts' }, out = {};
+    const camel = o => { const m = { n_boot: 'nBoot', min_ks: 'minKs', seeded_keys: 'seededKeys', otf_plaintexts: 'otfPlaintexts', lazy_moddown: 'lazyModdown' }, out = {};
         for (const [k, v] of Object.entries(o || {})) out[m[k] || k] = v; return out; };
     function simulateNamed(paramsName, hwName, opts, dvfs, hwOver) {
         const p = mkParams(PARAMS[paramsName]);

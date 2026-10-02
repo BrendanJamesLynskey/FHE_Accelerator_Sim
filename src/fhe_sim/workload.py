@@ -33,6 +33,7 @@ simplified rendering; real libraries differ in the details (see the README).
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
@@ -71,6 +72,9 @@ class BootOptions:
     min_ks: bool = False            # one key per BSGS loop, rotations applied iteratively (ARK "Min-KS")
     seeded_keys: bool = False       # evk "a" halves regenerated on chip from a PRNG seed
     otf_plaintexts: bool = False    # DFT diagonals generated on chip instead of loaded (ARK "OF-Limb" spirit)
+    lazy_moddown: bool = False      # OpenFHE's BSGS (found by replaying its trace): rotations stay in the
+                                    # Q*P basis, one ModDown per DFT level, and many more (now NTT-free)
+                                    # baby steps than giant steps
 
 
 @dataclass
@@ -190,6 +194,53 @@ class Builder:
         ks = [Kernel("auto", w, 2 * w)] + self.seed_kernels(lev) + ks_tail(p, lev)
         return self.emit("hrot", lev, [x, digits], lev, ks, key=self.key(kid, lev))
 
+    def extend(self, x: str) -> str:
+        """Lift a ciphertext into the Q*P basis (multiply by P mod each q): no transforms."""
+        p, lev = self.p, self.lvl(x)
+        N, l = p.N, lev + 1
+        return self.emit("extend", lev, [x], lev, [k_mac(2 * l * N)],
+                         out_bytes=2 * (l + p.k) * N * 8)
+
+    def hrot_hoisted_ext(self, x: str, digits: str, kid: str) -> str:
+        """A hoisted rotation left in the Q*P basis: automorphism and inner product, no ModDown."""
+        p, lev = self.p, self.lvl(x)
+        N, l, k, b = p.N, lev + 1, p.k, p.beta(lev)
+        w = (l + b * (l + k)) * N
+        ks = [Kernel("auto", w, 2 * w)] + self.seed_kernels(lev) + ks_tail(p, lev)[:1]
+        return self.emit("hrot", lev, [x, digits], lev, ks, key=self.key(kid, lev),
+                         out_bytes=2 * (l + k) * N * 8)
+
+    def pmac_ext(self, xs: list[str], pt_ids: list[str], moddown: bool = True) -> str:
+        """BSGS inner sum on Q*P-basis inputs (plaintexts stored in Q*P too), optionally ModDown."""
+        p, lev = self.p, self.lvl(*xs)
+        N, l, m = p.N, lev + 1, len(xs)
+        lk = l + p.k
+        kern = [k_mac(2 * lk * N * m + 2 * lk * N * (m - 1))]
+        if self.o.otf_plaintexts:
+            kern = [k_ntt(lk * m, N), k_mac(lk * N * m)] + kern
+            pts = [(pid, N * 8) for pid in pt_ids]
+        else:
+            pts = [(pid, lk * N * 8) for pid in pt_ids]
+        down = ks_tail(p, lev)[1:] if moddown else []
+        return self.emit("pmac", lev, xs, lev, kern + down, pts=pts,
+                         out_bytes=None if moddown else 2 * lk * N * 8)
+
+    def hrot_ext(self, x: str, kid: str) -> str:
+        """A rotation whose result stays in the Q*P basis (ModUp, automorphism, inner product)."""
+        p, lev = self.p, self.lvl(x)
+        N, l = p.N, lev + 1
+        ks = ([Kernel("auto", 2 * l * N, 4 * l * N)] + ks_modup(p, lev) + self.seed_kernels(lev)
+              + ks_tail(p, lev)[:1])
+        return self.emit("hrot", lev, [x], lev, ks, key=self.key(kid, lev),
+                         out_bytes=2 * (l + p.k) * N * 8)
+
+    def add_ext(self, xs: list[str]) -> str:
+        """Sum Q*P-basis ciphertexts, ModDown once, rescale."""
+        p, lev = self.p, self.lvl(*xs)
+        N, lk = p.N, lev + 1 + p.k
+        kern = [k_mac(2 * lk * N * max(1, len(xs) - 1))] + ks_tail(p, lev)[1:] + rescale_kernels(p, lev)
+        return self.emit("add", lev, xs, lev - 1, kern)
+
     def pmac(self, xs: list[str], pt_ids: list[str]) -> str:
         """sum_i pt_i * x_i: plaintext multiplies and accumulation (BSGS inner sum)."""
         p, lev = self.p, self.lvl(*xs)
@@ -229,8 +280,15 @@ class Builder:
     def dft(self, x: str, prefix: str, n_levels: int) -> str:
         p, o = self.p, self.o
         for j, k in enumerate(dft_split(p.slots_log, n_levels)):
-            d = (1 << (k + 1)) - 1                            # non-zero diagonals of a radix-2^k stage
-            n1 = min(1 << cdiv(k + 1, 2), d)                  # baby steps
+            d = min((1 << (k + 1)) - 1, p.slots)              # non-zero diagonals of a radix-2^k stage
+            lazy = o.lazy_moddown and o.hoisting and not o.min_ks
+            if lazy and d == p.slots:                         # one dense level (OpenFHE's linear transform)
+                n1 = 1 << (int(math.isqrt(p.slots - 1) + 1).bit_length() - 1 + 1) if p.slots > 1 else 1
+                n1 = min(n1, d)
+            elif lazy:                                        # OpenFHE GetCollapsedFFTParams
+                n1 = min(1 << (k // 2 + 1 + (1 if d > 7 else 0)), d)
+            else:
+                n1 = min(1 << cdiv(k + 1, 2), d)              # baby steps (balanced)
             n2 = cdiv(d, n1)                                  # giant steps
             tag = f"{prefix}{j}"
             babies = [x]
@@ -238,6 +296,10 @@ class Builder:
                 if o.min_ks:
                     for _ in range(1, n1):
                         babies.append(self.hrot(babies[-1], f"{tag}.b"))
+                elif o.hoisting and o.lazy_moddown:
+                    dig = self.modup(x)
+                    babies = [self.extend(x)] + [self.hrot_hoisted_ext(x, dig, f"{tag}.b{i}")
+                                                 for i in range(1, n1)]
                 elif o.hoisting:
                     dig = self.modup(x)
                     babies += [self.hrot_hoisted(x, dig, f"{tag}.b{i}") for i in range(1, n1)]
@@ -246,12 +308,19 @@ class Builder:
             inners = []
             for g in range(n2):
                 m = min(n1, d - g * n1)
-                inners.append(self.pmac(babies[:m], [f"{tag}.d{g}.{i}" for i in range(m)]))
+                ids = [f"{tag}.d{g}.{i}" for i in range(m)]
+                if lazy and n1 > 1:
+                    inners.append(self.pmac_ext(babies[:m], ids, moddown=(g > 0)))
+                else:
+                    inners.append(self.pmac(babies[:m], ids))
             if o.min_ks:                                      # Horner over the giant steps
                 acc = inners[-1]
                 for g in range(n2 - 2, -1, -1):
                     acc = self.add([self.hrot(acc, f"{tag}.g"), inners[g]], rescale=(g == 0))
                 x = acc if n2 > 1 else self.add([acc], rescale=True)
+            elif lazy and n1 > 1:
+                parts = [inners[0]] + [self.hrot_ext(inners[g], f"{tag}.g{g}") for g in range(1, n2)]
+                x = self.add_ext(parts)
             else:
                 parts = [inners[0]] + [self.hrot(inners[g], f"{tag}.g{g}") for g in range(1, n2)]
                 x = self.add(parts, rescale=True)

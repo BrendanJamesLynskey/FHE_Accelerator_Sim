@@ -146,9 +146,14 @@ PARAMS = {
     "ark": CKKSParams("ARK-like (N=2^16, L=23, dnum=4)", log_n=16, L=23, dnum=4),
     "lattigo": CKKSParams("Lattigo-like (N=2^16, L=24, dnum=5)", log_n=16, L=24, dnum=5),
     "gpu100x": CKKSParams("100x GPU (N=2^16, L=34, dnum=5)", log_n=16, L=34, dnum=5),
+    # OpenFHE v1.5.1, uniform ternary keys: an 89-coefficient (degree-88) Chebyshev series and
+    # R_UNIFORM = 6 double-angle steps (ckksrns-fhe.h); confirmed by the recorded kernel trace.
     "openfhe-sparse": CKKSParams("OpenFHE sparse (N=2^16, L=18, dnum=3, 8 slots)", log_n=16, L=18,
                                  dnum=3, q_bits=59, log_slots=3, cts_levels=1, stc_levels=1,
-                                 evalmod_degree=119, double_angle=3),
+                                 evalmod_degree=88, double_angle=6),
+    "openfhe-full14": CKKSParams("OpenFHE full slots (N=2^14, L=30, dnum=3)", log_n=14, L=30,
+                                 dnum=3, q_bits=59, cts_levels=3, stc_levels=3,
+                                 evalmod_degree=88, double_angle=6),
     "small": CKKSParams("small test set (N=2^12, L=11, dnum=3)", log_n=12, L=11, dnum=3,
                         cts_levels=2, stc_levels=2, evalmod_degree=15, double_angle=1),
 }
