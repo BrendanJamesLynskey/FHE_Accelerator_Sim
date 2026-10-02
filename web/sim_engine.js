@@ -44,7 +44,7 @@
     };
 
     // ── workload (workload.py) ───────────────────────────────────────
-    const STAGES = ['modraise', 'cts', 'evalmod', 'stc'];
+    const STAGES = ['modraise', 'cts', 'evalmod', 'stc', 'app', 'app_post'];
     const K = (kind, amount, words) => ({ kind, amount, words });
     const kNtt = (limbs, N, inv) => K(inv ? 'intt' : 'ntt', limbs, 2 * limbs * N);
     const kMac = ops => K('mac', ops, 3 * ops);

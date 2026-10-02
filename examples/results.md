@@ -231,7 +231,7 @@ Sparse bootstrap (predicted)               12112.7ms    8473.3ms     -30%
 Same bootstrap, OpenFHE trace replayed     12112.7ms   10758.6ms     -11%
 ```
 
-One ARK-set bootstrap (203 HE ops, 1153 kernels): Python/SimPy 72 ms, JavaScript (node) 13 ms of wall-clock time.
+One ARK-set bootstrap (203 HE ops, 1153 kernels): Python/SimPy 74 ms, JavaScript (node) 13 ms of wall-clock time.
 
 ## 13. The dnum trade-off (N = 2^16, L = 23, top level; log PQ uses 50-bit scaling and 60-bit special primes)
 
@@ -306,3 +306,30 @@ One ARK-set bootstrap (203 HE ops, 1153 kernels): Python/SimPy 72 ms, JavaScript
 | stc | 7 / 4 / 4 | 0 / 0 | 7 / 4 / 4 | 44 / 118 / 74 | 0.08 / 0.05 / 0.05 | 0 |
 
 Sparse bootstrap on the CPU-like model: measured 12.11 s; scheme model 8.48 s (-30%); replayed OpenFHE trace 10.77 s (-11%).
+
+## 18. Programs compiled by HEIR v2026.10.01, simulated through the HEIR front end (calibration/heir)
+
+| program | N, limbs | HE ops | rotations | pt mults | relins | bootstraps | SRAM MiB | latency | keys / pt / ct GB | mJ | verdict |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| LoLa (MNIST CNN, square activations) | 2^15, 11 limbs, 3 special | 409 | 55 | 162 | 2 | 0 | 512 | 0.61 ms | 0.35 / 0.17 / 0.00 | 51 | memory-bound |
+| MNIST MLP (polynomial ReLU) | 2^15, 13 limbs, 2 special | 1655 | 56 | 529 | 0 | 0 | 512 | 2.25 ms | 0.73 / 0.95 / 0.27 | 200 | memory-bound |
+| LoLa, level budget 2 (HEIR places a bootstrap) | 2^17, 47 limbs, 12 special | 625 | 55 | 162 | 2 | 1 | 512 | 202.75 ms | 61.43 / 24.58 / 112.46 | 15554 | memory-bound |
+| LoLa, level budget 2 (HEIR places a bootstrap) | 2^17, 47 limbs, 12 special | 625 | 55 | 162 | 2 | 1 | 2048 | 101.45 ms | 47.92 / 24.58 / 21.20 | 8359 | memory-bound |
+
+**The same LoLa after HEIR's OpenFHE code generation, run on the instrumented OpenFHE**
+
+|  | HEIR IR (front end) | OpenFHE execution |
+|---|---|---|
+| rotations | 55 | 55 |
+| distinct rotation keys | 41 | 41 |
+| relinearisations | 2 | 2 |
+| limbs at entry | 6 | 12 |
+| polynomial rescales | 38 | 641 |
+| NTT + iNTT limbs | 1,862 | 9,346 |
+| key GB requested | 0.43 | 1.19 |
+| ARK-class latency | 0.61 ms | 1.84 ms |
+| small-digital latency | 0.97 ms | 5.38 ms |
+
+front-end note: eval_chebyshev degree 5: model schedule ends at level 0, HEIR's at 1; HEIR's level kept
+
+front-end note: bootstrap: model output level 30, HEIR's type says 1; limbs dropped

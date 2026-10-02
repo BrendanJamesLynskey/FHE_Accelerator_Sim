@@ -11,6 +11,7 @@
     fhe-sim --trace boot.json                # open in https://ui.perfetto.dev
     fhe-sim --dump-trace t.json / --replay t.json
     fhe-sim --openfhe-log calibration/openfhe_trace/sparse16.log.gz --hw cpu   # a real OpenFHE bootstrap
+    fhe-sim --heir calibration/heir/lola.ckks.mlir.gz                    # a program compiled by HEIR
 """
 
 from __future__ import annotations
@@ -59,6 +60,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--trace", metavar="FILE", help="write a Chrome trace-event JSON")
     p.add_argument("--dump-trace", metavar="FILE", help="write the operation trace as JSON")
     p.add_argument("--replay", metavar="FILE", help="simulate an operation trace from JSON")
+    p.add_argument("--heir", metavar="FILE",
+                   help="simulate the server function of HEIR ckks-dialect output (.mlir or .mlir.gz)")
     p.add_argument("--openfhe-log", metavar="FILE",
                    help="simulate a kernel stream recorded from instrumented OpenFHE (.log or .log.gz)")
     p.add_argument("--json", action="store_true")
@@ -93,7 +96,13 @@ def main(argv=None) -> None:
     params = PARAMS[a.params]
     opts = BootOptions(n_boot=a.n_boot, hoisting=not a.no_hoist, min_ks=a.min_ks,
                        seeded_keys=a.seeded_keys, otf_plaintexts=a.otf_pt, lazy_moddown=a.lazy_moddown)
-    if a.openfhe_log:
+    if a.heir:
+        from .heir_frontend import compile_ir
+        prog = compile_ir(a.heir, opts)
+        trace = prog.trace
+        for note in prog.notes:
+            print("note:", note)
+    elif a.openfhe_log:
         from .openfhe_trace import log_to_trace, read_log
         trace = log_to_trace(read_log(a.openfhe_log))
     elif a.replay:

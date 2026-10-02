@@ -39,7 +39,7 @@ from pathlib import Path
 
 from .params import CKKSParams, cdiv, ceil_log2
 
-STAGES = ["modraise", "cts", "evalmod", "stc"]
+STAGES = ["modraise", "cts", "evalmod", "stc", "app", "app_post"]   # "app": application ops from a compiler front end
 
 
 @dataclass

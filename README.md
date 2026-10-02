@@ -50,10 +50,15 @@ separate, and a test ladder runs from hand formulas to a JavaScript twin.
   instrumented with a 78-line patch to log every NTT, base conversion, key switch,
   automorphism, rescale and plaintext multiply. The model is checked against them
   stage by stage, and the streams replay on the engine (`fhe-sim --openfhe-log`).
-* **74 tests:** parameter sizes, closed-form operation counts, invariants, analytic
+* **A HEIR front end:** reads the `ckks`-dialect output of the
+  [HEIR](https://heir.dev) compiler (release v2026.10.01) and builds a trace of the
+  server function, with HEIR's parameters, levels, rotations and bootstrap
+  placement. Three of HEIR's example programs are included (`fhe-sim --heir`): LoLa,
+  an MNIST MLP, and LoLa with a HEIR-placed bootstrap.
+* **89 tests:** parameter sizes, closed-form operation counts, invariants, analytic
   queueing checks, behaviour, power (both power modes), Hypothesis properties,
-  precision, calibration, the model against recorded OpenFHE streams, and
-  JS ↔ Python parity.
+  precision, calibration, the model against recorded OpenFHE streams, the HEIR
+  front end (including the same program executed by OpenFHE), and JS ↔ Python parity.
 
 ---
 
@@ -63,7 +68,7 @@ separate, and a test ladder runs from hand formulas to a JavaScript twin.
 python -m venv .venv
 source .venv/bin/activate
 pip install -e .[dev]
-pytest                                        # 74 tests, about 20 seconds
+pytest                                        # 89 tests, about 20 seconds
 
 fhe-sim                                       # ARK-like parameters on an ARK-class digital design
 fhe-sim --counts                              # operation and byte counts per stage, no timing
@@ -78,6 +83,7 @@ fhe-sim --trace boot.json                     # open in https://ui.perfetto.dev
 fhe-sim --dump-trace t.json; fhe-sim --replay t.json
 fhe-sim --openfhe-log calibration/openfhe_trace/sparse16.log.gz --hw cpu   # replay a real OpenFHE bootstrap
 fhe-sim --lazy-moddown                        # OpenFHE's BSGS split: fewer NTTs, more keys
+fhe-sim --heir calibration/heir/lola.ckks.mlir.gz   # LoLa, compiled by HEIR
 
 python examples/results.py                    # regenerate every number in this README and the decks
 python examples/calibrate_openfhe.py          # the OpenFHE calibration
@@ -109,11 +115,12 @@ power        avg 82 W  peak 176 W (TDP 250 W)  1139.1 mJ/bootstrap  energy: stat
 | `src/fhe_sim/metrics.py` | Latency, stage breakdown, utilisation, bound attribution, hot-spots, traffic by class, energy and power |
 | `src/fhe_sim/precision.py` | Functional model of an exact modular NTT on an analogue FFT engine (digit planes, Bluestein, ADC) |
 | `src/fhe_sim/trace.py` | Chrome trace-event export for Perfetto |
+| `src/fhe_sim/heir_frontend.py` | Reads HEIR `ckks`-dialect IR: parameters, levels, SSA dependencies, bootstraps, Chebyshev activations; builds a trace |
 | `src/fhe_sim/openfhe_trace.py` | Reads kernel streams recorded from instrumented OpenFHE: per-stage counts, conversion to a replayable trace |
 | `src/fhe_sim/search.py` | Analytic lower bound, SRAM sweep, bisection for minimum SRAM, parallel design sweep, Pareto front |
 | `src/fhe_sim/cli.py` | The `fhe-sim` command |
 | `web/sim_engine.js` | The browser port (with a minimal SimPy core) used in deck 03 |
-| `calibration/` | OpenFHE timing measurements and scripts; `openfhe_trace/`: the OpenFHE patch, the trace driver and two recorded bootstraps |
+| `calibration/` | OpenFHE timing measurements and scripts; `openfhe_trace/`: the OpenFHE patch, the trace driver and two recorded bootstraps; `heir/`: three HEIR-compiled programs and the OpenFHE execution of one |
 | `examples/results.py` | Generates `examples/results.md`, the source of every quoted number |
 
 ### Selected results (from `examples/results.md`)
@@ -180,6 +187,26 @@ is element-wise work the tracer does not log. Full-slot bootstrapping at N=2^16
 could not be measured or recorded: OpenFHE's keys and precomputed plaintexts
 exceeded the memory cap on this 15 GB machine.
 
+### Real programs compiled by HEIR
+
+`examples/results.md` §18, on the ARK-class design:
+
+| Program | N, limbs | HE ops | SRAM | Latency | Keys / plaintexts / ciphertexts | Verdict |
+|---------|----------|--------|------|---------|---------------------------------|---------|
+| LoLa (MNIST CNN, square activations) | 2^15, 11 | 409 | 512 MiB | 0.61 ms | 0.35 / 0.17 / 0.00 GB | memory-bound |
+| MNIST MLP (polynomial ReLU) | 2^15, 13 | 1,655 | 512 MiB | 2.25 ms | 0.73 / 0.95 / 0.27 GB | memory-bound |
+| LoLa, level budget 2 (HEIR places a bootstrap) | 2^17, 47 | 625 | 512 MiB | 202.75 ms | 61.43 / 24.58 / 112.46 GB | memory-bound |
+| … same program | 2^17, 47 | 625 | 2 GiB | 101.45 ms | 47.92 / 24.58 / 21.20 GB | memory-bound |
+
+* **The MLP is weight-bound:** it moves more plaintext than key material.
+* **HEIR's bootstrap parameters outgrow the chip.** To fit a bootstrap under the tiny
+  budget it chose N=2^17 with 47 primes, and a single key switch then needs 354 MiB of scratch.
+* **The same LoLa through HEIR's OpenFHE code generation**, run on the instrumented
+  OpenFHE, performs exactly the 55 rotations, 41 rotation keys and 2 relinearisations
+  the front end reads. It costs 3× more on the ARK-class model (1.84 vs 0.61 ms): the
+  generated context carries 12 limbs where HEIR's level analysis needs 6, and OpenFHE's
+  automatic rescaling adds 641 polynomial rescales to HEIR's 19 rescale ops.
+
 ### Checked against real OpenFHE bootstraps
 
 `calibration/openfhe_trace/full14.log.gz` (N=2^14, 8,192 slots, level budget {3,3},
@@ -228,11 +255,12 @@ external inputs, object sizes and levels, and per HE op: inputs, output, key
 Anything that can emit this can drive the engine:
 
 * **This repo's scheme model** (`workload.py`), the default.
-* **An FHE compiler.** [HEIR](https://heir.dev) lowers CKKS programs through
-  polynomial and modular-arithmetic levels where NTTs, key switches and base
-  conversions are explicit. A pass or translator at that level could emit this
-  format. **Not implemented here.** HEIR's dialects and pipelines change quickly,
-  so check its documentation.
+* **An FHE compiler: done for HEIR.** `heir_frontend.compile_ir` reads HEIR's output after
+  `--torch-linalg-to-ckks`/`--mlir-to-ckks` with `unroll-fhe-kernel-loops=true`. At that point
+  the server function is straight-line `ckks` code with the level in every type, and the front
+  end emits one HE op per `ckks` op, with dependencies from SSA. `ckks.bootstrap` is expanded
+  with the scheme model's bootstrap, and `kernel.eval_chebyshev` with its Chebyshev evaluation.
+  Validated on HEIR v2026.10.01 only; HEIR's dialects change quickly. See `calibration/heir/README.md`.
 * **An instrumented library.** Done for OpenFHE v1.5.1: `calibration/openfhe_trace`
   holds the 78-line patch, the C++ driver, two recorded bootstraps and build steps.
   `openfhe_trace.log_to_trace` turns a log into this format. Operations are
