@@ -116,6 +116,9 @@ class Accelerator:
     # Otherwise an object with chunk_time(nbytes, write, prev_write, peak_gbps) -> seconds, such as
     # Memory_System_Sim's HBMChunkModel (command-level DRAM timing, refresh, scheduling).
     memory: object | None = field(default=None, compare=False)
+    # Optional area model (fhe_sim.ppa.AreaModel). None: ppa.AREA_7NM. Area never changes a
+    # simulated time or energy, so like ``memory`` it stays out of equality.
+    area: object | None = field(default=None, compare=False)
 
     def with_(self, **kw) -> "Accelerator":
         return replace(self, **kw)

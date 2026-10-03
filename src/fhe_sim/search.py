@@ -9,6 +9,11 @@
   both fall monotonically with SRAM size, which the behavioural tests check.
 * ``design_sweep``    a grid over hardware knobs, run in parallel processes.
 * ``pareto``          non-dominated (latency, energy) points.
+* ``pareto_nd``       non-dominated points over any number of lower-is-better metrics, such as
+  the three-way PPA front (latency, energy per bootstrap, die area).
+
+Every point also carries its area (``ppa.area_mm2``), computed from the hardware knobs; it never
+changes a simulated time or energy.
 """
 
 from __future__ import annotations
@@ -19,6 +24,7 @@ from itertools import product
 
 from .hardware import Accelerator, CostModel
 from .metrics import summarise
+from .ppa import ppa_metrics
 from .params import CKKSParams
 from .sim import simulate
 from .workload import BootOptions, Trace, bootstrap_trace
@@ -46,10 +52,13 @@ def analytic_bound(trace: Trace, hw: Accelerator) -> dict:
 def run_point(args) -> dict:
     p, hw, opts = args
     m = summarise(simulate(bootstrap_trace(p, opts), hw))
+    q = ppa_metrics(m, hw)
     return {"latency_s": m["per_bootstrap_s"], "energy_J": m["energy"]["per_bootstrap_J"],
             "key_GB": m["hbm_bytes"]["key"] / 1e9, "hbm_GB": m["hbm_bytes"]["total"] / 1e9,
             "key_share": m["hbm_bytes"]["key_share"], "bound": m["bound"],
-            "peak_W": m["energy"]["peak_power_W"]}
+            "peak_W": m["energy"]["peak_power_W"], "area_mm2": q["area_mm2"]["total"],
+            "perf_per_mm2": q["perf_per_mm2"], "perf_per_W": q["perf_per_W"], "edp_Js": q["edp_Js"],
+            "usd_per_unit": q["usd_per_unit"]}
 
 
 def sram_sweep(p: CKKSParams, hw: Accelerator, sizes_mib: list[int],
@@ -102,3 +111,19 @@ def pareto(rows: list[dict], x: str = "latency_s", y: str = "energy_J") -> list[
         if not front or r[y] < front[-1][y]:
             front.append(r)
     return front
+
+
+def dominates(a: dict, b: dict, keys: tuple) -> bool:
+    """a is no worse than b in every key and better in at least one (lower is better)."""
+    better = False
+    for k in keys:
+        if a[k] > b[k]:
+            return False
+        if a[k] < b[k]:
+            better = True
+    return better
+
+
+def pareto_nd(rows: list[dict], keys: tuple = ("latency_s", "energy_J", "area_mm2")) -> list[dict]:
+    """Points that no other point dominates, in input order. O(n^2): fine for design sweeps."""
+    return [r for r in rows if not any(dominates(o, r, keys) for o in rows if o is not r)]

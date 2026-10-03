@@ -83,12 +83,13 @@ separate, and a test ladder runs from hand formulas to a JavaScript twin.
 python -m venv .venv
 source .venv/bin/activate
 pip install -e .[dev]
-pytest                                        # 104 tests, about 20 seconds
+pytest                                        # 125 tests, about 30 seconds
 
 fhe-sim                                       # ARK-like parameters on an ARK-class digital design
 fhe-sim --counts                              # operation and byte counts per stage, no timing
 fhe-sim --min-ks --seeded-keys --otf-pt       # cut key traffic: watch the bound move
-fhe-sim --sweep-sram 128 256 512 1024 2048    # traffic against scratchpad size
+fhe-sim --sweep-sram 128 256 512 1024 2048    # traffic, latency, energy and area against scratchpad size
+fhe-sim --area                                # area (7 nm), yield, silicon cost and PPA metrics
 fhe-sim --hw small                            # an NTT-starved design
 fhe-sim --hw small --optical ideal            # hypothetical precision-free optical NTT
 fhe-sim --hw hybrid --enob 16                 # realistic optical engine at 16 ENOB
@@ -133,10 +134,11 @@ power        avg 82 W  peak 176 W (TDP 250 W)  1139.1 mJ/bootstrap  energy: stat
 | `src/fhe_sim/trace.py` | Chrome trace-event export for Perfetto |
 | `src/fhe_sim/heir_frontend.py` | Reads HEIR `ckks`-dialect IR: parameters, levels, SSA dependencies, bootstraps, Chebyshev activations; builds a trace |
 | `src/fhe_sim/openfhe_trace.py` | Reads kernel streams recorded from instrumented OpenFHE: per-stage counts, conversion to a replayable trace |
-| `src/fhe_sim/search.py` | Analytic lower bound, SRAM sweep, bisection for minimum SRAM, parallel design sweep, Pareto front |
+| `src/fhe_sim/search.py` | Analytic lower bound, SRAM sweep, bisection for minimum SRAM, parallel design sweep, Pareto fronts (2-D and N-D) |
+| `src/fhe_sim/ppa.py` | Area per component at 7 nm (ARK/BTS/CACTI-calibrated, illustrative), Poisson and Murphy yield, dies per wafer, silicon cost, perf/W, perf/mm², EDP |
 | `src/fhe_sim/cli.py` | The `fhe-sim` command |
 | `web/sim_engine.js` | The browser port (with a minimal SimPy core) used in deck 03 |
-| `calibration/` | OpenFHE timing measurements and scripts; `openfhe_trace/`: the OpenFHE patch, the trace driver and two recorded bootstraps; `heir/`: three HEIR-compiled programs and the OpenFHE execution of one |
+| `calibration/` | OpenFHE timing measurements and scripts; `openfhe_trace/`: the OpenFHE patch, the trace driver and two recorded bootstraps; `heir/`: three HEIR-compiled programs and the OpenFHE execution of one; `cacti/`: the CACTI 7 scratchpad sweep behind the SRAM area |
 | `examples/results.py` | Generates `examples/results.md`, the source of every quoted number |
 
 ### Selected results (from `examples/results.md`)
@@ -277,6 +279,115 @@ the same order, not a reproduction.
 **All hardware coefficients are illustrative.** Unit throughputs are sized like
 the published ASICs; energies are round numbers. Calibrate them by regressing
 measured or RTL-derived power on the simulator's event counts.
+
+### Power, performance and area (PPA): area, yield and cost
+
+The simulator measures performance and power; `src/fhe_sim/ppa.py` adds **area**, the third axis an
+architect trades against them, so one design study can show a real three-way trade-off. `fhe-sim --area`
+appends the breakdown to the report (`--json` always includes it under `ppa`); the default report and every
+number in §1–20 of `examples/results.md` are unchanged, because area is computed *from* a design and never
+fed back into its timing or energy.
+
+* **Node: 7 nm**, the node ARK and BTS report at (ASAP7 predictive PDK). **Every coefficient is illustrative**
+  and commented with its source in `ppa.py`:
+  * NTT butterflies, MAC lanes and the permutation network: [ARK](https://arxiv.org/abs/2205.00922)'s area
+    breakdown (MICRO 2022, Table IV: 4 NTTUs 57.2 mm², 4 BConvUs 9.3, 8 MADUs 8.9, 4 AutoUs 20.6) divided by its
+    unit counts (8,192 butterflies, 8,192 multiply-adds, 1,024 permuted words per cycle). Linear scaling to other
+    counts is the illustrative part: real wiring grows faster than the units it connects.
+  * SRAM: the shape of area against capacity from a [CACTI 7](https://github.com/HewlettPackard/cacti) sweep of
+    banked scratchpads (`calibration/cacti/`, 22 nm, low-standby-power cells, 4 MiB banks, 64 MiB to 2 GiB),
+    scaled to 7 nm by one factor anchored on ARK's 512 MB scratchpad (229.2 mm²);
+    [BTS](https://arxiv.org/abs/2112.15479)'s 512 MB (235.0 mm²) agrees within 3%. CACTI finds area per MiB
+    *falling* slightly as a banked scratchpad grows (0.92 to 0.80 mm²/MiB at 22 nm), so the model uses its curve,
+    not a constant.
+  * HBM PHYs: 14.8 mm² per 500 GB/s stack (ARK and BTS both give 29.6 mm² for two). Register files and NoC:
+    ARK's 19.5% of units + SRAM, applied to every design.
+  * The optical engine: converter channels on the main die plus a 100 mm² photonic die, **speculative** round
+    numbers (the engine itself is FHESim 04's model).
+* **Yield and cost**: Poisson `Y = exp(-A·D0)` and Murphy `Y = ((1 - exp(-A·D0)) / (A·D0))²`, dies per 300 mm
+  wafer `π r²/A − π d/√(2A)`, and silicon $ per good die. D0 = 0.1 per cm² and $10,000 per wafer are
+  illustrative; HBM, packaging and test are not costed.
+* **Metrics**: perf/W (bootstraps per joule, which is just 1/energy), perf/mm², bootstraps/s per $, EDP and ED²P;
+  `search.pareto_nd` finds the non-dominated designs in any number of lower-is-better metrics.
+* `web/sim_engine.js` ports all of it; `tests/test_ppa.py` checks the port exactly (with a tolerance only where
+  `exp` appears), area monotone in every resource, yield in (0, 1] and falling with area, Poisson ≤ Murphy, and
+  that the Pareto set is non-dominated. Hypothesis found that the textbook `1 - exp(-x)` in Murphy's formula
+  cancels to zero for tiny dies; the model uses `expm1`.
+
+```
+area (7 nm (ASAP7-class predictive PDK, as used by ARK and BTS); illustrative)
+  mm²     ntt 28.6  mac 18.2  auto 82.4  sram 229.2  uncore 69.9  hbm_phy 29.6
+  die 457.9 mm²
+  yield   Poisson 63.3%  Murphy 64.4%  123 dies/wafer  $126 of silicon per good unit (illustrative D0 and wafer price; no HBM, packaging or test)
+  PPA     71.8 bootstraps/s  0.88 per J  0.157 /s per mm²  568.21 /s per $1000  EDP 15.874 mJ·s
+```
+
+**Area per component** (`examples/results.md` §21; the first row is ARK's own Table IV, reproduced by construction):
+
+| design | NTT | MAC | permute | SRAM | uncore | HBM PHY | optical (electronic) | die mm² | photonic die mm² | dies / wafer | Poisson yield | Murphy yield | silicon $ per good unit |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| ARK as published (8,192 bfly, 1,024 perm. words/cycle) | 57.2 | 18.2 | 20.6 | 229.2 | 63.4 | 29.6 | 0.0 | 418.2 | 0 | 136 | 65.8% | 66.8% | $110 |
+| ARK-class (this model's default) | 28.6 | 18.2 | 82.4 | 229.2 | 69.9 | 29.6 | 0.0 | 457.9 | 0 | 123 | 63.3% | 64.4% | $126 |
+| small digital | 3.6 | 4.5 | 20.6 | 229.2 | 50.3 | 59.2 | 0.0 | 367.4 | 0 | 157 | 69.3% | 70.0% | $91 |
+| small + hybrid optical* | 3.6 | 4.5 | 20.6 | 229.2 | 50.3 | 59.2 | 1.5 | 368.9 | 100 | 156 | 69.1% | 69.9% | $109 |
+| small + ideal optical* | 3.6 | 4.5 | 20.6 | 229.2 | 50.3 | 59.2 | 1.5 | 368.9 | 100 | 156 | 69.1% | 69.9% | $109 |
+
+The default ARK-class design's permutation network moves 4,096 words per cycle, 4x ARK's: 18% of the die
+for a unit §4 shows 2% busy. Cutting it to 1,024 words is the cheapest perf/mm² win in §23.
+
+**Scratchpad size as a three-way trade-off** (§22, all three key-traffic techniques; Pareto = not dominated in
+latency, energy and area):
+
+| SRAM MiB | bootstrap | mJ | die mm² | perf/mm² (1/s/mm²) | perf/W (1/J) | EDP (mJ·s) | silicon $ | Pareto | verdict |
+|---|---|---|---|---|---|---|---|---|---|
+| 128 | 21.22 ms | 1691 | 253.5 | 0.186 | 0.59 | 35.88 | 54 | yes | memory-bound |
+| 256 | 8.71 ms | 774 | 324.8 | 0.354 | 1.29 | 6.74 | 76 | yes | MAC-bound |
+| 384 | 7.56 ms | 646 | 392.3 | 0.337 | 1.55 | 4.88 | 100 | yes | MAC-bound |
+| 512 | 7.19 ms | 607 | 457.9 | 0.304 | 1.65 | 4.37 | 126 | yes | MAC-bound |
+| 768 | 7.19 ms | 607 | 581.1 | 0.239 | 1.65 | 4.37 | 187 |  | MAC-bound |
+| 1024 | 7.19 ms | 607 | 695.2 | 0.200 | 1.65 | 4.37 | 253 |  | MAC-bound |
+| 2048 | 7.19 ms | 607 | 1182.3 (> reticle) | 0.118 | 1.65 | 4.37 | 727 |  | MAC-bound |
+| 4096 | 7.19 ms | 607 | 2180.5 (> reticle) | 0.064 | 1.65 | 4.37 | 3,357 |  | MAC-bound |
+
+**Spend the area on compute or on SRAM?** (§23, one change at a time from a 256 MiB design.) With the baseline
+algorithm the design is memory-bound, and SRAM buys 18 to 30 times more latency per mm² than compute (pairing
+the smaller and the larger upgrades):
+
+| design | die mm² | area added | bootstrap | mJ | perf/mm² | ms saved per 100 mm² |
+|---|---|---|---|---|---|---|
+| start: 256 MiB, 4,096 bfly, 8,192 MAC | 324.8 | +0.0 | 17.10 ms, memory-bound | 1383 | 0.180 | - |
+| 2x NTT + MAC | 380.7 | +55.9 | 16.98 ms, memory-bound | 1379 | 0.155 | 0.21 |
+| 4x NTT + MAC | 492.5 | +167.8 | 16.96 ms, memory-bound | 1378 | 0.120 | 0.08 |
+| 2x MAC only | 346.5 | +21.7 | 17.14 ms, memory-bound | 1385 | 0.168 | -0.20 |
+| +128 MiB SRAM (384) | 392.3 | +67.5 | 14.57 ms, memory-bound | 1193 | 0.175 | 3.74 |
+| +256 MiB SRAM (512) | 457.9 | +133.1 | 13.94 ms, memory-bound | 1139 | 0.157 | 2.38 |
+| permutation network cut to 1,024 words/cycle | 250.9 | -73.8 | 17.09 ms, memory-bound | 1383 | 0.233 | - |
+
+With all three techniques it is MAC-bound and the two are about even:
+
+| design | die mm² | area added | bootstrap | mJ | perf/mm² | ms saved per 100 mm² |
+|---|---|---|---|---|---|---|
+| start: 256 MiB, 4,096 bfly, 8,192 MAC | 324.8 | +0.0 | 8.71 ms, MAC-bound | 774 | 0.354 | - |
+| 2x NTT + MAC | 380.7 | +55.9 | 7.77 ms, MAC-bound | 736 | 0.338 | 1.68 |
+| 4x NTT + MAC | 492.5 | +167.8 | 7.63 ms, MAC-bound | 731 | 0.266 | 0.64 |
+| 2x MAC only | 346.5 | +21.7 | 8.64 ms, MAC-bound | 771 | 0.334 | 0.34 |
+| +128 MiB SRAM (384) | 392.3 | +67.5 | 7.56 ms, MAC-bound | 646 | 0.337 | 1.71 |
+| +256 MiB SRAM (512) | 457.9 | +133.1 | 7.19 ms, MAC-bound | 607 | 0.304 | 1.14 |
+| permutation network cut to 1,024 words/cycle | 250.9 | -73.8 | 8.74 ms, MAC-bound | 775 | 0.456 | - |
+
+**Why area is cost** (§24): splitting the 2 GiB design, which no reticle can print as one die, into chiplets
+(silicon only; the die-to-die links, interposer and assembly that real chiplets pay are not modelled):
+
+| chiplets | mm² each | fits the reticle | Murphy yield each | silicon $ for the set |
+|---|---|---|---|---|
+| 1 | 1182.3 | no | 34.4% | $727 |
+| 2 | 591.1 | yes | 57.0% | $381 |
+| 4 | 295.6 | yes | 75.0% | $267 |
+| 8 | 147.8 | yes | 86.4% | $219 |
+
+§25 puts the optical engine on the same plane: the realistic engine loses on every axis, and the ideal engine
+gains perf/mm² only on the NTT-starved design, with a placeholder photonic die. Treat it as the shape of the
+question, not an answer.
 
 ### A command-level HBM model instead of peak bandwidth
 

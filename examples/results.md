@@ -222,7 +222,7 @@ Energy question only: the TDP is not enforced in this search, so the clock stays
 |---|---|---|---|---|---|
 | 8192 | 512 | 2000 | 6.34 ms | 573 | MAC-bound |
 
-36 design points simulated in 0.3 s on 8 processes; 1 Pareto-optimal.
+36 design points simulated in 0.5 s on 8 processes; 1 Pareto-optimal.
 
 ## 12. Calibration against OpenFHE (this machine) and simulator speed
 
@@ -235,7 +235,7 @@ Sparse bootstrap (predicted)               12112.7ms    8473.3ms     -30%
 Same bootstrap, OpenFHE trace replayed     12112.7ms   10758.6ms     -11%
 ```
 
-One ARK-set bootstrap (203 HE ops, 1153 kernels): Python/SimPy 58 ms, JavaScript (node) 12 ms of wall-clock time.
+One ARK-set bootstrap (203 HE ops, 1153 kernels): Python/SimPy 76 ms, JavaScript (node) 13 ms of wall-clock time.
 
 ## 13. The dnum trade-off (N = 2^16, L = 23, top level; log PQ uses 50-bit scaling and 60-bit special primes)
 
@@ -382,3 +382,139 @@ HBM time per chunk: peak (the default), a flat derating (`hbm_gbps` x efficiency
 | 250 GB/s | 8.33 ms, MAC-bound | 9.34 ms, MAC-bound | 8.57 ms, MAC-bound | 8.56 ms, MAC-bound |
 
 Memory_System_Sim's efficiency for a 4 MiB read chunk after a read: 0.902; 1 MiB: 0.883; refresh alone costs 9.1%.
+
+## 21. Area model: silicon per component (7 nm, illustrative; sources in ppa.py)
+
+Node: 7 nm (ASAP7-class predictive PDK, as used by ARK and BTS). Functional units scaled linearly from ARK's published 7 nm breakdown (MICRO 2022, Table IV); SRAM from a CACTI 7 sweep (22 nm, low-standby-power cells, 4 MiB banks; `calibration/cacti`) scaled to 7 nm by ARK's 512 MB scratchpad; uncore (register files + NoC) is ARK's 19.5% of units + SRAM; HBM PHY 14.8 mm² per 500 GB/s stack. Optical areas are speculative. Silicon cost: Murphy yield, D0 = 0.1 per cm², $10,000 per 300 mm wafer (both illustrative); no HBM, packaging or test.
+
+| design | NTT | MAC | permute | SRAM | uncore | HBM PHY | optical (electronic) | die mm² | photonic die mm² | dies / wafer | Poisson yield | Murphy yield | silicon $ per good unit |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| ARK as published (8,192 bfly, 1,024 perm. words/cycle) | 57.2 | 18.2 | 20.6 | 229.2 | 63.4 | 29.6 | 0.0 | 418.2 | 0 | 136 | 65.8% | 66.8% | $110 |
+| ARK-class (this model's default) | 28.6 | 18.2 | 82.4 | 229.2 | 69.9 | 29.6 | 0.0 | 457.9 | 0 | 123 | 63.3% | 64.4% | $126 |
+| small digital | 3.6 | 4.5 | 20.6 | 229.2 | 50.3 | 59.2 | 0.0 | 367.4 | 0 | 157 | 69.3% | 70.0% | $91 |
+| small + hybrid optical* | 3.6 | 4.5 | 20.6 | 229.2 | 50.3 | 59.2 | 1.5 | 368.9 | 100 | 156 | 69.1% | 69.9% | $109 |
+| small + ideal optical* | 3.6 | 4.5 | 20.6 | 229.2 | 50.3 | 59.2 | 1.5 | 368.9 | 100 | 156 | 69.1% | 69.9% | $109 |
+
+ARK's Table IV sums to 418.2 mm² (the paper prints 418.3); the first row reproduces it by construction. This model's default permutation network moves 4,096 words per cycle, 4x ARK's, so it costs 82.4 mm² (18% of the die) while §4 shows it 2% busy. *Speculative: converter channels at 50 GS/s, 0.05 mm² per DAC and 0.10 mm² per ADC, and a 100 mm² photonic die costed like a 7 nm die (pessimistic for a photonics process). The CPU-like preset is a timing reference and has no meaningful area.
+
+## 22. Scratchpad size as a three-way trade-off: latency, energy and area (ARK-class design)
+
+Pareto: not dominated in (latency, energy per bootstrap, total area); lower is better in all three. perf = bootstraps per second; perf/W = bootstraps per joule.
+
+
+**baseline algorithm**
+
+| SRAM MiB | bootstrap | mJ | die mm² | perf/mm² (1/s/mm²) | perf/W (1/J) | EDP (mJ·s) | silicon $ | Pareto | verdict |
+|---|---|---|---|---|---|---|---|---|---|
+| 128 | 26.98 ms | 2084 | 253.5 | 0.146 | 0.48 | 56.22 | 54 | yes | memory-bound |
+| 256 | 17.10 ms | 1383 | 324.8 | 0.180 | 0.72 | 23.65 | 76 | yes | memory-bound |
+| 384 | 14.57 ms | 1193 | 392.3 | 0.175 | 0.84 | 17.39 | 100 | yes | memory-bound |
+| 512 | 13.94 ms | 1139 | 457.9 | 0.157 | 0.88 | 15.87 | 126 | yes | memory-bound |
+| 768 | 13.33 ms | 1096 | 581.1 | 0.129 | 0.91 | 14.60 | 187 | yes | memory-bound |
+| 1024 | 11.69 ms | 984 | 695.2 | 0.123 | 1.02 | 11.50 | 253 | yes | memory-bound |
+| 2048 | 11.41 ms | 966 | 1182.3 (> reticle) | 0.074 | 1.04 | 11.02 | 727 | yes | memory-bound |
+| 4096 | 11.41 ms | 966 | 2180.5 (> reticle) | 0.040 | 1.04 | 11.02 | 3,357 |  | memory-bound |
+
+**Min-KS + seeded keys + OTF plaintexts**
+
+| SRAM MiB | bootstrap | mJ | die mm² | perf/mm² (1/s/mm²) | perf/W (1/J) | EDP (mJ·s) | silicon $ | Pareto | verdict |
+|---|---|---|---|---|---|---|---|---|---|
+| 128 | 21.22 ms | 1691 | 253.5 | 0.186 | 0.59 | 35.88 | 54 | yes | memory-bound |
+| 256 | 8.71 ms | 774 | 324.8 | 0.354 | 1.29 | 6.74 | 76 | yes | MAC-bound |
+| 384 | 7.56 ms | 646 | 392.3 | 0.337 | 1.55 | 4.88 | 100 | yes | MAC-bound |
+| 512 | 7.19 ms | 607 | 457.9 | 0.304 | 1.65 | 4.37 | 126 | yes | MAC-bound |
+| 768 | 7.19 ms | 607 | 581.1 | 0.239 | 1.65 | 4.37 | 187 |  | MAC-bound |
+| 1024 | 7.19 ms | 607 | 695.2 | 0.200 | 1.65 | 4.37 | 253 |  | MAC-bound |
+| 2048 | 7.19 ms | 607 | 1182.3 (> reticle) | 0.118 | 1.65 | 4.37 | 727 |  | MAC-bound |
+| 4096 | 7.19 ms | 607 | 2180.5 (> reticle) | 0.064 | 1.65 | 4.37 | 3,357 |  | MAC-bound |
+
+Above 2 GiB the SRAM density is CACTI's 2 GiB value (CACTI 7 cannot model 4 GiB). Dies larger than the 858 mm² reticle could not be built as one die; they are shown to mark where the trade-off ends.
+
+## 23. Spend the area on compute or on SRAM? Upgrades from a 256 MiB ARK-class design
+
+Each row changes one thing from the starting point. Cells: bootstrap latency, verdict. 'ms saved per 100 mm²' is the latency gained for the area added.
+
+
+**baseline algorithm**
+
+| design | die mm² | area added | bootstrap | mJ | perf/mm² | ms saved per 100 mm² |
+|---|---|---|---|---|---|---|
+| start: 256 MiB, 4,096 bfly, 8,192 MAC | 324.8 | +0.0 | 17.10 ms, memory-bound | 1383 | 0.180 | - |
+| 2x NTT + MAC | 380.7 | +55.9 | 16.98 ms, memory-bound | 1379 | 0.155 | 0.21 |
+| 4x NTT + MAC | 492.5 | +167.8 | 16.96 ms, memory-bound | 1378 | 0.120 | 0.08 |
+| 2x MAC only | 346.5 | +21.7 | 17.14 ms, memory-bound | 1385 | 0.168 | -0.20 |
+| +128 MiB SRAM (384) | 392.3 | +67.5 | 14.57 ms, memory-bound | 1193 | 0.175 | 3.74 |
+| +256 MiB SRAM (512) | 457.9 | +133.1 | 13.94 ms, memory-bound | 1139 | 0.157 | 2.38 |
+| permutation network cut to 1,024 words/cycle | 250.9 | -73.8 | 17.09 ms, memory-bound | 1383 | 0.233 | - |
+
+**Min-KS + seeded keys + OTF plaintexts**
+
+| design | die mm² | area added | bootstrap | mJ | perf/mm² | ms saved per 100 mm² |
+|---|---|---|---|---|---|---|
+| start: 256 MiB, 4,096 bfly, 8,192 MAC | 324.8 | +0.0 | 8.71 ms, MAC-bound | 774 | 0.354 | - |
+| 2x NTT + MAC | 380.7 | +55.9 | 7.77 ms, MAC-bound | 736 | 0.338 | 1.68 |
+| 4x NTT + MAC | 492.5 | +167.8 | 7.63 ms, MAC-bound | 731 | 0.266 | 0.64 |
+| 2x MAC only | 346.5 | +21.7 | 8.64 ms, MAC-bound | 771 | 0.334 | 0.34 |
+| +128 MiB SRAM (384) | 392.3 | +67.5 | 7.56 ms, MAC-bound | 646 | 0.337 | 1.71 |
+| +256 MiB SRAM (512) | 457.9 | +133.1 | 7.19 ms, MAC-bound | 607 | 0.304 | 1.14 |
+| permutation network cut to 1,024 words/cycle | 250.9 | -73.8 | 8.74 ms, MAC-bound | 775 | 0.456 | - |
+
+**The full grid** (NTT bfly/cycle x MAC lanes x SRAM MiB = 64 designs, all techniques): the five best by perf/mm² and the Pareto front's size
+
+| NTT bfly/cycle | MAC lanes | SRAM MiB | bootstrap | mJ | die mm² | perf/mm² | verdict |
+|---|---|---|---|---|---|---|---|
+| 8192 | 8192 | 256 | 7.84 ms | 739 | 358.9 | 0.355 | MAC-bound |
+| 4096 | 8192 | 256 | 8.71 ms | 774 | 324.8 | 0.354 | MAC-bound |
+| 4096 | 4096 | 256 | 9.14 ms | 791 | 313.9 | 0.348 | MAC-bound |
+| 8192 | 8192 | 384 | 6.74 ms | 613 | 426.5 | 0.348 | MAC-bound |
+| 8192 | 4096 | 256 | 8.30 ms | 758 | 348.1 | 0.346 | MAC-bound |
+
+23 of 64 designs are Pareto-optimal in (latency, energy, area). The fastest, 16384 bfly / 16384 MAC / 512 MiB, takes 6.20 ms on 582.1 mm² (perf/mm² 0.277).
+
+## 24. Yield and silicon cost against die area (300 mm wafer, D0 = 0.1 per cm², $10,000 per wafer: illustrative)
+
+| die mm² | dies / wafer | Poisson yield | Murphy yield | good dies (Murphy) | $ per good die | $ per good mm² (vs 100 mm²) | fits the reticle |
+|---|---|---|---|---|---|---|---|
+| 50 | 1319 | 95.1% | 95.1% | 1255 | $8 | 0.92x | yes |
+| 100 | 640 | 90.5% | 90.6% | 580 | $17 | 1.00x | yes |
+| 200 | 306 | 81.9% | 82.1% | 251 | $40 | 1.15x | yes |
+| 300 | 197 | 74.1% | 74.6% | 147 | $68 | 1.31x | yes |
+| 400 | 143 | 67.0% | 67.9% | 97 | $103 | 1.49x | yes |
+| 500 | 111 | 60.7% | 61.9% | 69 | $145 | 1.69x | yes |
+| 600 | 90 | 54.9% | 56.5% | 51 | $196 | 1.90x | yes |
+| 700 | 75 | 49.7% | 51.7% | 39 | $258 | 2.13x | yes |
+| 800 | 64 | 44.9% | 47.4% | 30 | $330 | 2.39x | yes |
+| 858 | 59 | 42.4% | 45.1% | 27 | $376 | 2.54x | yes |
+| 1200 | 39 | 30.1% | 33.9% | 13 | $756 | 3.65x | no |
+| 1600 | 27 | 20.2% | 24.9% | 7 | $1,489 | 5.39x | no |
+
+**Defect density sensitivity**: the ARK-class die (457.9 mm²), Poisson / Murphy yield and $ per good die (Murphy)
+
+| D0 per cm² | Poisson | Murphy | Murphy / Poisson | $ per good die |
+|---|---|---|---|---|
+| 0.05 | 79.5% | 79.9% | 1.00 | $102 |
+| 0.1 | 63.3% | 64.4% | 1.02 | $126 |
+| 0.2 | 40.0% | 42.9% | 1.07 | $190 |
+| 0.5 | 10.1% | 15.4% | 1.52 | $528 |
+
+**Splitting the 2 GiB design (1182.3 mm²) into equal chiplets** (silicon only: no die-to-die PHYs, interposer, assembly yield or known-good-die test, all of which real chiplet designs pay)
+
+| chiplets | mm² each | fits the reticle | Murphy yield each | silicon $ for the set |
+|---|---|---|---|---|
+| 1 | 1182.3 | no | 34.4% | $727 |
+| 2 | 591.1 | yes | 57.0% | $381 |
+| 4 | 295.6 | yes | 75.0% | $267 |
+| 8 | 147.8 | yes | 86.4% | $219 |
+
+## 25. The optical engine on the PPA plane (ark set, baseline algorithm; optical areas SPECULATIVE)
+
+| design | bootstrap | mJ | die mm² | photonic die mm² | perf/mm² (total area) | perf/W (1/J) | silicon $ | verdict |
+|---|---|---|---|---|---|---|---|---|
+| small digital, no optics | 17.46 ms | 1280 | 367.4 | 0 | 0.156 | 0.78 | $91 | NTT-bound |
+| + realistic engine (block 16, ENOB 12) | 401.38 ms | 46861 | 368.9 | 100 | 0.005 | 0.02 | $109 | NTT-bound (optical engine) |
+| + ideal engine (exact at any precision, block 4096) | 12.59 ms | 1375 | 368.9 | 100 | 0.169 | 0.73 | $109 | MAC-bound |
+| + ideal engine, 4x converter rate | 11.63 ms | 1318 | 373.4 | 100 | 0.182 | 0.76 | $110 | MAC-bound |
+| ARK-class (memory-bound), no optics | 13.94 ms | 1139 | 457.9 | 0 | 0.157 | 0.88 | $126 | memory-bound |
+| ARK-class + ideal engine | 16.87 ms | 1632 | 459.4 | 100 | 0.106 | 0.61 | $145 | memory-bound |
+
+The designs of §10 (the 36-bit-limb row is omitted). The electronic side of the engine (converters) is small at these rates; the photonic die is a placeholder, so treat these rows as the shape of the question, not an answer.

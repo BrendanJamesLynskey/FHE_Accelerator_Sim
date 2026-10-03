@@ -434,6 +434,146 @@ else:
     OUT.append(f"\nMemory_System_Sim's efficiency for a 4 MiB read chunk after a read: {m.efficiency(4 << 20, False, False):.3f}; "
                f"1 MiB: {m.efficiency(1 << 20, False, False):.3f}; refresh alone costs {100 * m.refresh_loss():.1f}%.")
 
+# 21 ── area ────────────────────────────────────────────────────────────
+from fhe_sim.ppa import AREA_7NM, DIE_COST, area_mm2, die_cost, ppa_metrics  # noqa: E402
+from fhe_sim.search import pareto_nd  # noqa: E402
+
+h("21. Area model: silicon per component (7 nm, illustrative; sources in ppa.py)")
+OUT.append(f"Node: {AREA_7NM.node}. Functional units scaled linearly from ARK's published 7 nm breakdown "
+           "(MICRO 2022, Table IV); SRAM from a CACTI 7 sweep (22 nm, low-standby-power cells, 4 MiB banks; "
+           "`calibration/cacti`) scaled to 7 nm by ARK's 512 MB scratchpad; uncore (register files + NoC) is ARK's "
+           f"{100 * AREA_7NM.uncore_frac:.1f}% of units + SRAM; HBM PHY {AREA_7NM.mm2_per_hbm_stack:.1f} mm² per "
+           f"{AREA_7NM.hbm_stack_gbps:.0f} GB/s stack. Optical areas are speculative. Silicon cost: Murphy yield, "
+           f"D0 = {DIE_COST.d0_per_cm2} per cm², ${DIE_COST.wafer_usd:,.0f} per 300 mm wafer (both illustrative); "
+           "no HBM, packaging or test.\n")
+ARK_PUB = HW.with_(name="ARK as published", ntt_bfly_per_cycle=8192, auto_words_per_cycle=1024)
+rows = []
+for label, hw in (("ARK as published (8,192 bfly, 1,024 perm. words/cycle)", ARK_PUB), ("ARK-class (this model's default)", HW),
+                  ("small digital", SMALL), ("small + hybrid optical*", ACCELERATORS["hybrid"]),
+                  ("small + ideal optical*", ACCELERATORS["ideal-optical"])):
+    a, c = area_mm2(hw), die_cost(area_mm2(hw)["die"])
+    rows.append([label] + [f"{a[k]:.1f}" for k in ("ntt", "mac", "auto", "sram", "uncore", "hbm_phy", "optical_electronic")]
+                + [f"{a['die']:.1f}", f"{a['photonic_die']:.0f}", c["dies_per_wafer"], f"{100 * c['poisson']:.1f}%",
+                   f"{100 * c['murphy']:.1f}%", f"${ppa_metrics(run(hw=hw), hw)['usd_per_unit']:,.0f}"])
+table(["design", "NTT", "MAC", "permute", "SRAM", "uncore", "HBM PHY", "optical (electronic)", "die mm²",
+       "photonic die mm²", "dies / wafer", "Poisson yield", "Murphy yield", "silicon $ per good unit"], rows)
+a = area_mm2(HW)
+OUT.append(f"\nARK's Table IV sums to 418.2 mm² (the paper prints 418.3); the first row reproduces it by construction. "
+           f"This model's default permutation network moves 4,096 words per cycle, 4x ARK's, so it costs "
+           f"{a['auto']:.1f} mm² ({100 * a['auto'] / a['die']:.0f}% of the die) while §4 shows it 2% busy. "
+           "*Speculative: converter channels at 50 GS/s, 0.05 mm² per DAC and 0.10 mm² per ADC, and a 100 mm² photonic "
+           "die costed like a 7 nm die (pessimistic for a photonics process). The CPU-like preset is a timing reference "
+           "and has no meaningful area.")
+
+# 22 ── three-way SRAM trade-off ─────────────────────────────────────────
+h("22. Scratchpad size as a three-way trade-off: latency, energy and area (ARK-class design)")
+OUT.append("Pareto: not dominated in (latency, energy per bootstrap, total area); lower is better in all three. "
+           "perf = bootstraps per second; perf/W = bootstraps per joule.\n")
+sizes22 = [128, 256, 384, 512, 768, 1024, 2048, 4096]
+for label, o in (("baseline algorithm", BootOptions()), ("Min-KS + seeded keys + OTF plaintexts", BootOptions(**ALL))):
+    rs = sram_sweep(ARK, HW, sizes22, o)
+    front = pareto_nd(rs)
+    OUT.append(f"\n**{label}**\n")
+    table(["SRAM MiB", "bootstrap", "mJ", "die mm²", "perf/mm² (1/s/mm²)", "perf/W (1/J)", "EDP (mJ·s)",
+           "silicon $", "Pareto", "verdict"],
+          [[r["sram_mib"], ms(r["latency_s"]), f"{1e3 * r['energy_J']:.0f}", f"{r['area_mm2']:.1f}"
+            + ("" if r["area_mm2"] <= DIE_COST.reticle_mm2 else " (> reticle)"),
+            f"{r['perf_per_mm2']:.3f}", f"{r['perf_per_W']:.2f}", f"{1e3 * r['edp_Js']:.2f}", f"{r['usd_per_unit']:,.0f}",
+            "yes" if r in front else "", r["bound"]] for r in rs])
+OUT.append("\nAbove 2 GiB the SRAM density is CACTI's 2 GiB value (CACTI 7 cannot model 4 GiB). Dies larger than the "
+           "858 mm² reticle could not be built as one die; they are shown to mark where the trade-off ends.")
+
+# 23 ── compute against SRAM ─────────────────────────────────────────────
+h("23. Spend the area on compute or on SRAM? Upgrades from a 256 MiB ARK-class design")
+OUT.append("Each row changes one thing from the starting point. Cells: bootstrap latency, verdict. "
+           "'ms saved per 100 mm²' is the latency gained for the area added.\n")
+base23 = HW.with_(sram_mib=256)
+ups = [("start: 256 MiB, 4,096 bfly, 8,192 MAC", {}),
+       ("2x NTT + MAC", dict(ntt_bfly_per_cycle=8192, mac_lanes=16384)),
+       ("4x NTT + MAC", dict(ntt_bfly_per_cycle=16384, mac_lanes=32768)),
+       ("2x MAC only", dict(mac_lanes=16384)),
+       ("+128 MiB SRAM (384)", dict(sram_mib=384)),
+       ("+256 MiB SRAM (512)", dict(sram_mib=512)),
+       ("permutation network cut to 1,024 words/cycle", dict(auto_words_per_cycle=1024))]
+for label, o in (("baseline algorithm", {}), ("Min-KS + seeded keys + OTF plaintexts", ALL)):
+    rows, a0, t0 = [], None, None
+    for name, over in ups:
+        hw = base23.with_(**over)
+        r = run(hw=hw, **o)
+        q = ppa_metrics(r, hw)
+        a, t = q["area_mm2"]["total"], r["per_bootstrap_s"]
+        if a0 is None:
+            a0, t0 = a, t
+        da = a - a0
+        rows.append([name, f"{a:.1f}", f"{da:+.1f}", f"{ms(t)}, {r['bound']}", f"{1e3 * r['energy']['per_bootstrap_J']:.0f}",
+                     f"{q['perf_per_mm2']:.3f}", f"{1e3 * (t0 - t) / da * 100:.2f}" if da > 0 else "-"])
+    OUT.append(f"\n**{label}**\n")
+    table(["design", "die mm²", "area added", "bootstrap", "mJ", "perf/mm²", "ms saved per 100 mm²"], rows)
+grid23 = {"ntt_bfly_per_cycle": [2048, 4096, 8192, 16384], "mac_lanes": [4096, 8192, 16384, 32768],
+          "sram_mib": [256, 384, 512, 1024]}
+OUT.append("\n**The full grid** (NTT bfly/cycle x MAC lanes x SRAM MiB = 64 designs, all techniques): the five best by "
+           "perf/mm² and the Pareto front's size\n")
+g = design_sweep(ARK, HW, grid23, BootOptions(**ALL), workers=2)
+gf = pareto_nd(g)
+table(["NTT bfly/cycle", "MAC lanes", "SRAM MiB", "bootstrap", "mJ", "die mm²", "perf/mm²", "verdict"],
+      [[r["ntt_bfly_per_cycle"], r["mac_lanes"], r["sram_mib"], ms(r["latency_s"]), f"{1e3 * r['energy_J']:.0f}",
+        f"{r['area_mm2']:.1f}", f"{r['perf_per_mm2']:.3f}", r["bound"]]
+       for r in sorted(g, key=lambda r: -r["perf_per_mm2"])[:5]])
+fastest = min(g, key=lambda r: r["latency_s"])
+OUT.append(f"\n{len(gf)} of {len(g)} designs are Pareto-optimal in (latency, energy, area). The fastest, "
+           f"{fastest['ntt_bfly_per_cycle']} bfly / {fastest['mac_lanes']} MAC / {fastest['sram_mib']} MiB, takes "
+           f"{ms(fastest['latency_s'])} on {fastest['area_mm2']:.1f} mm² (perf/mm² {fastest['perf_per_mm2']:.3f}).")
+
+# 24 ── yield and cost against die area ──────────────────────────────────
+h("24. Yield and silicon cost against die area (300 mm wafer, D0 = 0.1 per cm², $10,000 per wafer: illustrative)")
+rows = []
+c100 = die_cost(100.0)
+for ar in (50, 100, 200, 300, 400, 500, 600, 700, 800, 858, 1200, 1600):
+    c = die_cost(float(ar))
+    rows.append([ar, c["dies_per_wafer"], f"{100 * c['poisson']:.1f}%", f"{100 * c['murphy']:.1f}%",
+                 f"{c['good_dies']:.0f}", f"${c['usd_per_good_die']:,.0f}",
+                 f"{(c['usd_per_good_die'] / ar) / (c100['usd_per_good_die'] / 100):.2f}x",
+                 "yes" if c["fits_reticle"] else "no"])
+table(["die mm²", "dies / wafer", "Poisson yield", "Murphy yield", "good dies (Murphy)", "$ per good die",
+       "$ per good mm² (vs 100 mm²)", "fits the reticle"], rows)
+OUT.append("\n**Defect density sensitivity**: the ARK-class die "
+           f"({area_mm2(HW)['die']:.1f} mm²), Poisson / Murphy yield and $ per good die (Murphy)\n")
+rows = []
+for d0 in (0.05, 0.1, 0.2, 0.5):
+    ar = area_mm2(HW)["die"]
+    c = die_cost(ar, replace(DIE_COST, d0_per_cm2=d0))
+    rows.append([d0, f"{100 * c['poisson']:.1f}%", f"{100 * c['murphy']:.1f}%",
+                 f"{c['murphy'] / c['poisson']:.2f}", f"${c['usd_per_good_die']:,.0f}"])
+table(["D0 per cm²", "Poisson", "Murphy", "Murphy / Poisson", "$ per good die"], rows)
+big = area_mm2(HW.with_(sram_mib=2048))["die"]
+rows = []
+for k in (1, 2, 4, 8):
+    c = die_cost(big / k)
+    rows.append([k, f"{big / k:.1f}", "yes" if c["fits_reticle"] else "no", f"{100 * c['murphy']:.1f}%",
+                 f"${k * c['usd_per_good_die']:,.0f}"])
+OUT.append(f"\n**Splitting the 2 GiB design ({big:.1f} mm²) into equal chiplets** (silicon only: no die-to-die PHYs, "
+           "interposer, assembly yield or known-good-die test, all of which real chiplet designs pay)\n")
+table(["chiplets", "mm² each", "fits the reticle", "Murphy yield each", "silicon $ for the set"], rows)
+
+# 25 ── optics on the PPA plane ──────────────────────────────────────────
+h("25. The optical engine on the PPA plane (ark set, baseline algorithm; optical areas SPECULATIVE)")
+rows = []
+for name, hw, eng in cases:
+    if "36-bit" in name:
+        continue
+    hw2 = hw.with_(optical=eng) if eng else hw
+    r = run(hw=hw2)
+    q = ppa_metrics(r, hw2)
+    a = q["area_mm2"]
+    rows.append([name, ms(r["per_bootstrap_s"]), f"{1e3 * r['energy']['per_bootstrap_J']:.0f}", f"{a['die']:.1f}",
+                 f"{a['photonic_die']:.0f}", f"{q['perf_per_mm2']:.3f}", f"{q['perf_per_W']:.2f}",
+                 f"${q['usd_per_unit']:,.0f}", r["bound"]])
+table(["design", "bootstrap", "mJ", "die mm²", "photonic die mm²", "perf/mm² (total area)", "perf/W (1/J)",
+       "silicon $", "verdict"], rows)
+OUT.append("\nThe designs of §10 (the 36-bit-limb row is omitted). The electronic side of the engine (converters) is "
+           "small at these rates; the photonic die is a placeholder, so treat these rows as the shape of the question, "
+           "not an answer.")
+
 text = "# Results (generated by examples/results.py)\n\nAll hardware coefficients are illustrative.\n" + "\n".join(OUT) + "\n"
 (Path(__file__).parent / "results.md").write_text(text)
 print(text)

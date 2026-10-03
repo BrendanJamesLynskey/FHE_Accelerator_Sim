@@ -711,6 +711,83 @@
         };
     }
 
+    // ── power, performance and area (port of ppa.py; see its docstring for every source) ──
+    // Exact with Python except Math.exp/expm1 in the yield models (tested with a tolerance).
+    const CACTI_LSTP_22NM = [[64, 0.9189], [128, 0.8901], [256, 0.9020], [512, 0.8774], [1024, 0.8189], [2048, 0.7995]];
+    function areaModel(o) {
+        const am = Object.assign({ node: '7 nm (ASAP7-class predictive PDK, as used by ARK and BTS)', sramCurve: CACTI_LSTP_22NM,
+            sramNodeScale: 229.2 / 512 / 0.8774, mm2PerBfly: 57.2 / 8192, mm2PerMacLane: 18.2 / 8192, mm2PerAutoWord: 20.6 / 1024,
+            hbmStackGbps: 500.0, mm2PerHbmStack: 29.6 / 2, uncoreFrac: (42.8 + 20.6) / 325.2, converterGsps: 50.0, mm2PerDac: 0.05,
+            mm2PerAdc: 0.10, photonicDieMm2: 100.0 }, o);
+        am.sramMm2PerMib = mib => {
+            const c = am.sramCurve;
+            let per;
+            if (mib <= c[0][0]) per = c[0][1];
+            else if (mib >= c[c.length - 1][0]) per = c[c.length - 1][1];
+            else {
+                let i = 1;
+                while (c[i][0] < mib) i++;
+                const [x0, y0] = c[i - 1], [x1, y1] = c[i];
+                per = y0 + (y1 - y0) * (mib - x0) / (x1 - x0);
+            }
+            return per * am.sramNodeScale;
+        };
+        return am;
+    }
+    const AREA_7NM = areaModel({});
+    function areaMm2(hw, am) {
+        am = am || hw.area || AREA_7NM;
+        const ntt = hw.nttBflyPerCycle * am.mm2PerBfly, mac = hw.macLanes * am.mm2PerMacLane, auto = hw.autoWordsPerCycle * am.mm2PerAutoWord;
+        const sram = hw.sramMib * am.sramMm2PerMib(hw.sramMib);
+        const uncore = (ntt + mac + auto + sram) * am.uncoreFrac;
+        const hbmPhy = Math.ceil(hw.hbmGbps / am.hbmStackGbps) * am.mm2PerHbmStack;
+        let optE = 0.0, photonic = 0.0;
+        if (hw.optical) {
+            const ch = Math.ceil(hw.optical.samplesPerS / (am.converterGsps * 1e9));
+            optE = ch * (am.mm2PerDac + am.mm2PerAdc);
+            photonic = am.photonicDieMm2;
+        }
+        const die = ntt + mac + auto + sram + uncore + hbmPhy + optE;
+        return { ntt, mac, auto, sram, uncore, hbmPhy, opticalElectronic: optE, die, photonicDie: photonic, total: die + photonic };
+    }
+    const DIE_COST = { d0PerCm2: 0.1, waferMm: 300.0, waferUsd: 10000.0, reticleMm2: 858.0, yieldModel: 'murphy' };
+    const poissonYield = (a, d0) => Math.exp(-(a / 100.0) * d0);
+    function murphyYield(a, d0) {
+        const x = (a / 100.0) * d0;
+        if (x === 0) return 1.0;
+        const t = -Math.expm1(-x) / x;   // not 1 - exp(-x): it cancels for tiny dies
+        return t * t;
+    }
+    function diesPerWafer(a, waferMm = 300.0) {
+        const r = waferMm / 2.0;
+        const n = Math.PI * r * r / a - Math.PI * waferMm / Math.sqrt(2.0 * a);
+        return Math.max(0, Math.floor(n));
+    }
+    function dieCost(area, dc) {
+        dc = Object.assign({}, DIE_COST, dc);
+        const dpw = diesPerWafer(area, dc.waferMm), yp = poissonYield(area, dc.d0PerCm2), ym = murphyYield(area, dc.d0PerCm2);
+        const y = dc.yieldModel === 'murphy' ? ym : yp, good = dpw * y;
+        return { areaMm2: area, diesPerWafer: dpw, poisson: yp, murphy: ym, yield: y, goodDies: good,
+                 usdPerGoodDie: good > 0 ? dc.waferUsd / good : Infinity, fitsReticle: area <= dc.reticleMm2 };
+    }
+    function ppaMetrics(m, hw, am, dc) {
+        am = am || hw.area || AREA_7NM;
+        const a = areaMm2(hw, am), t = m.perBootstrapS, e = m.energy.perBootstrapJ;
+        const cost = dieCost(a.die, dc);
+        let usd = cost.usdPerGoodDie;
+        if (a.photonicDie > 0) usd = usd + dieCost(a.photonicDie, dc).usdPerGoodDie;
+        const perf = 1.0 / t;
+        return { areaMm2: a, node: am.node, dieCost: cost, usdPerUnit: usd, perfPerS: perf, perfPerW: 1.0 / e,
+                 perfPerMm2: perf / a.total, perfPerUsd: perf / usd, edpJs: e * t, ed2pJs2: e * t * t };
+    }
+    function dominates(a, b, keys) {
+        let better = false;
+        for (const k of keys) { if (a[k] > b[k]) return false; if (a[k] < b[k]) better = true; }
+        return better;
+    }
+    const paretoNd = (rows, keys = ['latencyS', 'energyJ', 'areaMm2']) =>
+        rows.filter(r => !rows.some(o => o !== r && dominates(o, r, keys)));
+
     // ── convenience for the parity test and the deck ─────────────────
     const camel = o => { const m = { n_boot: 'nBoot', min_ks: 'minKs', seeded_keys: 'seededKeys', otf_plaintexts: 'otfPlaintexts', lazy_moddown: 'lazyModdown', stc_first: 'stcFirst' }, out = {};
         for (const [k, v] of Object.entries(o || {})) out[m[k] || k] = v; return out; };
@@ -720,5 +797,6 @@
         return simulate(bootstrapTrace(p, camel(opts)), hw, { dvfs: !!dvfs });
     }
     root.FheSim = { PARAMS, ACCELERATORS, STAGES, UNITS, mkParams, bootstrapTrace, heOpTrace, summariseTrace, accelerator, optical, withHw,
-                    costModel, simulate, summarise, simulateNamed, dftSplit };
+                    costModel, simulate, summarise, simulateNamed, dftSplit,
+                    areaModel, AREA_7NM, areaMm2, DIE_COST, poissonYield, murphyYield, diesPerWafer, dieCost, ppaMetrics, dominates, paretoNd };
 })(typeof window !== 'undefined' ? window : globalThis);
