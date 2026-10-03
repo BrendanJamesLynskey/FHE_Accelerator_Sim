@@ -447,16 +447,19 @@ OUT.append(f"Node: {AREA_7NM.node}. Functional units scaled linearly from ARK's 
            f"D0 = {DIE_COST.d0_per_cm2} per cm², ${DIE_COST.wafer_usd:,.0f} per 300 mm wafer (both illustrative); "
            "no HBM, packaging or test.\n")
 ARK_PUB = HW.with_(name="ARK as published", ntt_bfly_per_cycle=8192, auto_words_per_cycle=1024)
-rows = []
+rows, rows2 = [], []
 for label, hw in (("ARK as published (8,192 bfly, 1,024 perm. words/cycle)", ARK_PUB), ("ARK-class (this model's default)", HW),
                   ("small digital", SMALL), ("small + hybrid optical*", ACCELERATORS["hybrid"]),
                   ("small + ideal optical*", ACCELERATORS["ideal-optical"])):
     a, c = area_mm2(hw), die_cost(area_mm2(hw)["die"])
     rows.append([label] + [f"{a[k]:.1f}" for k in ("ntt", "mac", "auto", "sram", "uncore", "hbm_phy", "optical_electronic")]
-                + [f"{a['die']:.1f}", f"{a['photonic_die']:.0f}", c["dies_per_wafer"], f"{100 * c['poisson']:.1f}%",
-                   f"{100 * c['murphy']:.1f}%", f"${ppa_metrics(run(hw=hw), hw)['usd_per_unit']:,.0f}"])
+                + [f"{a['die']:.1f}", f"{a['photonic_die']:.0f}"])
+    rows2.append([label, f"{a['die']:.1f}", c["dies_per_wafer"], f"{100 * c['poisson']:.1f}%", f"{100 * c['murphy']:.1f}%",
+                  f"${ppa_metrics(run(hw=hw), hw)['usd_per_unit']:,.0f}"])
 table(["design", "NTT", "MAC", "permute", "SRAM", "uncore", "HBM PHY", "optical (electronic)", "die mm²",
-       "photonic die mm²", "dies / wafer", "Poisson yield", "Murphy yield", "silicon $ per good unit"], rows)
+       "photonic die mm²"], rows)
+OUT.append("\n**Yield and silicon cost of the same designs**\n")
+table(["design", "die mm²", "dies / wafer", "Poisson yield", "Murphy yield", "silicon $ per good unit"], rows2)
 a = area_mm2(HW)
 OUT.append(f"\nARK's Table IV sums to 418.2 mm² (the paper prints 418.3); the first row reproduces it by construction. "
            f"This model's default permutation network moves 4,096 words per cycle, 4x ARK's, so it costs "
@@ -464,6 +467,19 @@ OUT.append(f"\nARK's Table IV sums to 418.2 mm² (the paper prints 418.3); the f
            "*Speculative: converter channels at 50 GS/s, 0.05 mm² per DAC and 0.10 mm² per ADC, and a 100 mm² photonic "
            "die costed like a 7 nm die (pessimistic for a photonics process). The CPU-like preset is a timing reference "
            "and has no meaningful area.")
+
+OUT.append("\n**SRAM density: CACTI 7 at 22 nm (`calibration/cacti`), and the model at 7 nm**\n")
+cac = json.loads((Path(__file__).parent.parent / "calibration" / "cacti" / "out" / "results.json").read_text())
+lstp = {r["size_mib"]: r for r in cac["rows"] if r["cell"] == "itrs-lstp"}
+hp = {r["size_mib"]: r for r in cac["rows"] if r["cell"] == "itrs-hp"}
+table(["MiB", "banks", "22 nm mm²/MiB (CACTI)", "array efficiency", "7 nm mm²/MiB (model)",
+       "7 nm mm² (model)", "leakage, lstp / hp cells"],
+      [[mib, r["banks"], f"{r['mm2_per_mib']:.4f}", f"{r['efficiency_pct']:.1f}%",
+        f"{AREA_7NM.sram_mm2_per_mib(mib):.4f}", f"{mib * AREA_7NM.sram_mm2_per_mib(mib):.1f}",
+        f"{r['leak_mw'] / 1e3:.2f} W / {hp[mib]['leak_mw'] / 1e3:,.0f} W"] for mib, r in lstp.items()])
+OUT.append(f"\nCACTI commit `{cac['cacti_commit'][:10]}`, 4 MiB banks, low-standby-power (`itrs-lstp`) cells; the 7 nm factor "
+           f"{AREA_7NM.sram_node_scale:.4f} makes 512 MiB equal ARK's 229.2 mm². Leakage is CACTI's at 22 nm (the "
+           "simulator's power model keeps its own static power).")
 
 # 22 ── three-way SRAM trade-off ─────────────────────────────────────────
 h("22. Scratchpad size as a three-way trade-off: latency, energy and area (ARK-class design)")

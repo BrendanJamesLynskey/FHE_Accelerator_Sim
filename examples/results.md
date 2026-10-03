@@ -222,7 +222,7 @@ Energy question only: the TDP is not enforced in this search, so the clock stays
 |---|---|---|---|---|---|
 | 8192 | 512 | 2000 | 6.34 ms | 573 | MAC-bound |
 
-36 design points simulated in 0.5 s on 8 processes; 1 Pareto-optimal.
+36 design points simulated in 0.4 s on 8 processes; 1 Pareto-optimal.
 
 ## 12. Calibration against OpenFHE (this machine) and simulator speed
 
@@ -235,7 +235,7 @@ Sparse bootstrap (predicted)               12112.7ms    8473.3ms     -30%
 Same bootstrap, OpenFHE trace replayed     12112.7ms   10758.6ms     -11%
 ```
 
-One ARK-set bootstrap (203 HE ops, 1153 kernels): Python/SimPy 76 ms, JavaScript (node) 13 ms of wall-clock time.
+One ARK-set bootstrap (203 HE ops, 1153 kernels): Python/SimPy 70 ms, JavaScript (node) 12 ms of wall-clock time.
 
 ## 13. The dnum trade-off (N = 2^16, L = 23, top level; log PQ uses 50-bit scaling and 60-bit special primes)
 
@@ -387,15 +387,38 @@ Memory_System_Sim's efficiency for a 4 MiB read chunk after a read: 0.902; 1 MiB
 
 Node: 7 nm (ASAP7-class predictive PDK, as used by ARK and BTS). Functional units scaled linearly from ARK's published 7 nm breakdown (MICRO 2022, Table IV); SRAM from a CACTI 7 sweep (22 nm, low-standby-power cells, 4 MiB banks; `calibration/cacti`) scaled to 7 nm by ARK's 512 MB scratchpad; uncore (register files + NoC) is ARK's 19.5% of units + SRAM; HBM PHY 14.8 mm² per 500 GB/s stack. Optical areas are speculative. Silicon cost: Murphy yield, D0 = 0.1 per cm², $10,000 per 300 mm wafer (both illustrative); no HBM, packaging or test.
 
-| design | NTT | MAC | permute | SRAM | uncore | HBM PHY | optical (electronic) | die mm² | photonic die mm² | dies / wafer | Poisson yield | Murphy yield | silicon $ per good unit |
-|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| ARK as published (8,192 bfly, 1,024 perm. words/cycle) | 57.2 | 18.2 | 20.6 | 229.2 | 63.4 | 29.6 | 0.0 | 418.2 | 0 | 136 | 65.8% | 66.8% | $110 |
-| ARK-class (this model's default) | 28.6 | 18.2 | 82.4 | 229.2 | 69.9 | 29.6 | 0.0 | 457.9 | 0 | 123 | 63.3% | 64.4% | $126 |
-| small digital | 3.6 | 4.5 | 20.6 | 229.2 | 50.3 | 59.2 | 0.0 | 367.4 | 0 | 157 | 69.3% | 70.0% | $91 |
-| small + hybrid optical* | 3.6 | 4.5 | 20.6 | 229.2 | 50.3 | 59.2 | 1.5 | 368.9 | 100 | 156 | 69.1% | 69.9% | $109 |
-| small + ideal optical* | 3.6 | 4.5 | 20.6 | 229.2 | 50.3 | 59.2 | 1.5 | 368.9 | 100 | 156 | 69.1% | 69.9% | $109 |
+| design | NTT | MAC | permute | SRAM | uncore | HBM PHY | optical (electronic) | die mm² | photonic die mm² |
+|---|---|---|---|---|---|---|---|---|---|
+| ARK as published (8,192 bfly, 1,024 perm. words/cycle) | 57.2 | 18.2 | 20.6 | 229.2 | 63.4 | 29.6 | 0.0 | 418.2 | 0 |
+| ARK-class (this model's default) | 28.6 | 18.2 | 82.4 | 229.2 | 69.9 | 29.6 | 0.0 | 457.9 | 0 |
+| small digital | 3.6 | 4.5 | 20.6 | 229.2 | 50.3 | 59.2 | 0.0 | 367.4 | 0 |
+| small + hybrid optical* | 3.6 | 4.5 | 20.6 | 229.2 | 50.3 | 59.2 | 1.5 | 368.9 | 100 |
+| small + ideal optical* | 3.6 | 4.5 | 20.6 | 229.2 | 50.3 | 59.2 | 1.5 | 368.9 | 100 |
+
+**Yield and silicon cost of the same designs**
+
+| design | die mm² | dies / wafer | Poisson yield | Murphy yield | silicon $ per good unit |
+|---|---|---|---|---|---|
+| ARK as published (8,192 bfly, 1,024 perm. words/cycle) | 418.2 | 136 | 65.8% | 66.8% | $110 |
+| ARK-class (this model's default) | 457.9 | 123 | 63.3% | 64.4% | $126 |
+| small digital | 367.4 | 157 | 69.3% | 70.0% | $91 |
+| small + hybrid optical* | 368.9 | 156 | 69.1% | 69.9% | $109 |
+| small + ideal optical* | 368.9 | 156 | 69.1% | 69.9% | $109 |
 
 ARK's Table IV sums to 418.2 mm² (the paper prints 418.3); the first row reproduces it by construction. This model's default permutation network moves 4,096 words per cycle, 4x ARK's, so it costs 82.4 mm² (18% of the die) while §4 shows it 2% busy. *Speculative: converter channels at 50 GS/s, 0.05 mm² per DAC and 0.10 mm² per ADC, and a 100 mm² photonic die costed like a 7 nm die (pessimistic for a photonics process). The CPU-like preset is a timing reference and has no meaningful area.
+
+**SRAM density: CACTI 7 at 22 nm (`calibration/cacti`), and the model at 7 nm**
+
+| MiB | banks | 22 nm mm²/MiB (CACTI) | array efficiency | 7 nm mm²/MiB (model) | 7 nm mm² (model) | leakage, lstp / hp cells |
+|---|---|---|---|---|---|---|
+| 64 | 16 | 0.9189 | 72.6% | 0.4688 | 30.0 | 0.02 W / 20 W |
+| 128 | 32 | 0.8901 | 74.9% | 0.4541 | 58.1 | 0.03 W / 41 W |
+| 256 | 64 | 0.9020 | 73.9% | 0.4602 | 117.8 | 0.07 W / 86 W |
+| 512 | 128 | 0.8774 | 76.0% | 0.4477 | 229.2 | 0.14 W / 179 W |
+| 1024 | 256 | 0.8189 | 81.4% | 0.4178 | 427.8 | 0.29 W / 394 W |
+| 2048 | 512 | 0.7995 | 83.4% | 0.4079 | 835.4 | 0.60 W / 846 W |
+
+CACTI commit `1ffd8dfb10`, 4 MiB banks, low-standby-power (`itrs-lstp`) cells; the 7 nm factor 0.5102 makes 512 MiB equal ARK's 229.2 mm². Leakage is CACTI's at 22 nm (the simulator's power model keeps its own static power).
 
 ## 22. Scratchpad size as a three-way trade-off: latency, energy and area (ARK-class design)
 

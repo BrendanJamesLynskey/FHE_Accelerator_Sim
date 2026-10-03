@@ -294,7 +294,8 @@ fed back into its timing or energy.
     breakdown (MICRO 2022, Table IV: 4 NTTUs 57.2 mm², 4 BConvUs 9.3, 8 MADUs 8.9, 4 AutoUs 20.6) divided by its
     unit counts (8,192 butterflies, 8,192 multiply-adds, 1,024 permuted words per cycle). Linear scaling to other
     counts is the illustrative part: real wiring grows faster than the units it connects.
-  * SRAM: the shape of area against capacity from a [CACTI 7](https://github.com/HewlettPackard/cacti) sweep of
+  * SRAM: the shape of area against capacity from a [CACTI 7](https://github.com/HewlettPackard/cacti) sweep
+    ([what CACTI is, and how far to trust it](https://brendanjameslynskey.github.io/SimEng_12_Measurement_Tools_and_Methods/#card-cacti)) of
     banked scratchpads (`calibration/cacti/`, 22 nm, low-standby-power cells, 4 MiB banks, 64 MiB to 2 GiB),
     scaled to 7 nm by one factor anchored on ARK's 512 MB scratchpad (229.2 mm²);
     [BTS](https://arxiv.org/abs/2112.15479)'s 512 MB (235.0 mm²) agrees within 3%. CACTI finds area per MiB
@@ -324,13 +325,13 @@ area (7 nm (ASAP7-class predictive PDK, as used by ARK and BTS); illustrative)
 
 **Area per component** (`examples/results.md` §21; the first row is ARK's own Table IV, reproduced by construction):
 
-| design | NTT | MAC | permute | SRAM | uncore | HBM PHY | optical (electronic) | die mm² | photonic die mm² | dies / wafer | Poisson yield | Murphy yield | silicon $ per good unit |
-|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| ARK as published (8,192 bfly, 1,024 perm. words/cycle) | 57.2 | 18.2 | 20.6 | 229.2 | 63.4 | 29.6 | 0.0 | 418.2 | 0 | 136 | 65.8% | 66.8% | $110 |
-| ARK-class (this model's default) | 28.6 | 18.2 | 82.4 | 229.2 | 69.9 | 29.6 | 0.0 | 457.9 | 0 | 123 | 63.3% | 64.4% | $126 |
-| small digital | 3.6 | 4.5 | 20.6 | 229.2 | 50.3 | 59.2 | 0.0 | 367.4 | 0 | 157 | 69.3% | 70.0% | $91 |
-| small + hybrid optical* | 3.6 | 4.5 | 20.6 | 229.2 | 50.3 | 59.2 | 1.5 | 368.9 | 100 | 156 | 69.1% | 69.9% | $109 |
-| small + ideal optical* | 3.6 | 4.5 | 20.6 | 229.2 | 50.3 | 59.2 | 1.5 | 368.9 | 100 | 156 | 69.1% | 69.9% | $109 |
+| design | NTT | MAC | permute | SRAM | uncore | HBM PHY | optical (electronic) | die mm² | photonic die mm² |
+|---|---|---|---|---|---|---|---|---|---|
+| ARK as published (8,192 bfly, 1,024 perm. words/cycle) | 57.2 | 18.2 | 20.6 | 229.2 | 63.4 | 29.6 | 0.0 | 418.2 | 0 |
+| ARK-class (this model's default) | 28.6 | 18.2 | 82.4 | 229.2 | 69.9 | 29.6 | 0.0 | 457.9 | 0 |
+| small digital | 3.6 | 4.5 | 20.6 | 229.2 | 50.3 | 59.2 | 0.0 | 367.4 | 0 |
+| small + hybrid optical* | 3.6 | 4.5 | 20.6 | 229.2 | 50.3 | 59.2 | 1.5 | 368.9 | 100 |
+| small + ideal optical* | 3.6 | 4.5 | 20.6 | 229.2 | 50.3 | 59.2 | 1.5 | 368.9 | 100 |
 
 The default ARK-class design's permutation network moves 4,096 words per cycle, 4x ARK's: 18% of the die
 for a unit §4 shows 2% busy. Cutting it to 1,024 words is the cheapest perf/mm² win in §23.
@@ -467,6 +468,7 @@ The tools and methods this repository measures with are explained, with their ov
 
 * [analytic lower bounds](https://brendanjameslynskey.github.io/SimEng_12_Measurement_Tools_and_Methods/#card-bounds)
 * [Perfetto traces](https://brendanjameslynskey.github.io/FHE_Hub_Accelerator_Simulators/#g-perfetto)
+* [CACTI](https://brendanjameslynskey.github.io/SimEng_12_Measurement_Tools_and_Methods/#card-cacti) (the SRAM area calibration in `calibration/cacti/`)
 
 ## Part of
 
