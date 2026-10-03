@@ -350,6 +350,13 @@ Each of these is an exercise in deck 05.
 
 ---
 
+## How the measurements are made
+
+The tools and methods this repository measures with are explained, with their overheads, accuracy and pitfalls, in [SimEng 12: Measurement Tools and Methods](https://brendanjameslynskey.github.io/SimEng_12_Measurement_Tools_and_Methods/) and the series glossaries:
+
+* [analytic lower bounds](https://brendanjameslynskey.github.io/SimEng_12_Measurement_Tools_and_Methods/#card-bounds)
+* [Perfetto traces](https://brendanjameslynskey.github.io/FHE_Hub_Accelerator_Simulators/#g-perfetto)
+
 ## Part of
 
 The [FHE Accelerator Simulators](https://github.com/BrendanJamesLynskey/FHE_Hub_Accelerator_Simulators)
