@@ -24,7 +24,7 @@ jobs:
           pip install "memsim @ git+https://github.com/BrendanJamesLynskey/Memory_System_Sim"
       - name: Tests (scheme counts, simulator, properties, OpenFHE and HEIR front ends, memory model, JavaScript port bit-exact with Python)
         run: pytest -rs
-      - name: Headline result unchanged (ARK-class baseline, results.md §1)
+      - name: Headline result unchanged (ARK-class baseline, results.md §4)
         run: |
           fhe-sim --params ark --hw ark --json | python -c "
           import json, sys
