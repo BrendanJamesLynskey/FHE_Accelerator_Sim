@@ -112,6 +112,10 @@ class Accelerator:
     power_mode: str = "dynamic"
     hbm_min_frac: float = 0.25         # lowest HBM bandwidth the power manager may grant
     optical: OpticalEngine | None = None
+    # Optional detailed memory model. None: a chunk takes bytes / hbm_gbps (peak bandwidth).
+    # Otherwise an object with chunk_time(nbytes, write, prev_write, peak_gbps) -> seconds, such as
+    # Memory_System_Sim's HBMChunkModel (command-level DRAM timing, refresh, scheduling).
+    memory: object | None = field(default=None, compare=False)
 
     def with_(self, **kw) -> "Accelerator":
         return replace(self, **kw)

@@ -47,6 +47,8 @@ def build_parser() -> argparse.ArgumentParser:
                    help="OpenFHE's BSGS: rotations stay in Q*P, one ModDown per DFT level")
     p.add_argument("--sram", type=int, metavar="MiB")
     p.add_argument("--hbm", type=float, metavar="GB/s")
+    p.add_argument("--memsim", action="store_true",
+                   help="time HBM chunks with Memory_System_Sim's command-level HBM model (pip install it)")
     p.add_argument("--ntt", type=float, metavar="BFLY/CYCLE")
     p.add_argument("--mac", type=float, metavar="LANES")
     p.add_argument("--tdp", type=float, metavar="W")
@@ -76,6 +78,9 @@ def hardware_from_args(a):
                             ("mac_lanes", a.mac), ("tdp_w", a.tdp)) if v is not None}
     if a.no_tdp:
         kw["enforce_tdp"] = False
+    if getattr(a, "memsim", False):
+        from memsim.fhe import HBMChunkModel     # optional dependency: Memory_System_Sim
+        kw["memory"] = HBMChunkModel()
     if a.power_mode:
         kw["power_mode"] = a.power_mode
     if a.optical == "off":

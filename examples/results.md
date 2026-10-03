@@ -222,7 +222,7 @@ Energy question only: the TDP is not enforced in this search, so the clock stays
 |---|---|---|---|---|---|
 | 8192 | 512 | 2000 | 6.34 ms | 573 | MAC-bound |
 
-36 design points simulated in 0.4 s on 8 processes; 1 Pareto-optimal.
+36 design points simulated in 0.3 s on 8 processes; 1 Pareto-optimal.
 
 ## 12. Calibration against OpenFHE (this machine) and simulator speed
 
@@ -235,7 +235,7 @@ Sparse bootstrap (predicted)               12112.7ms    8473.3ms     -30%
 Same bootstrap, OpenFHE trace replayed     12112.7ms   10758.6ms     -11%
 ```
 
-One ARK-set bootstrap (203 HE ops, 1153 kernels): Python/SimPy 73 ms, JavaScript (node) 12 ms of wall-clock time.
+One ARK-set bootstrap (203 HE ops, 1153 kernels): Python/SimPy 58 ms, JavaScript (node) 12 ms of wall-clock time.
 
 ## 13. The dnum trade-off (N = 2^16, L = 23, top level; log PQ uses 50-bit scaling and 60-bit special primes)
 
@@ -357,3 +357,28 @@ front-end note: bootstrap: model output level 30, HEIR's type says 1; limbs drop
 |---|---|---|---|---|---|
 | full14 | 2 -> 12 | 5 -> 15 | 48 / 24 | 0.57 / 0.18 | 23,985 / 13,145 |
 | sparse16 | 2 -> 4 | 3 -> 5 | 24 / 24 | 0.08 / 0.07 | 7,831 / 7,820 |
+
+## 20. A command-level HBM model (Memory_System_Sim) against 'bandwidth x efficiency' (ARK-class, 1000 GB/s)
+
+HBM time per chunk: peak (the default), a flat derating (`hbm_gbps` x efficiency), or Memory_System_Sim's command-level model of an HBM2E-class stack (`Accelerator(memory=...)`). Cells: bootstrap latency, HBM busy fraction, verdict.
+
+| HBM model | baseline algorithm | Min-KS + seeded keys + OTF plaintexts |
+|---|---|---|
+| peak bandwidth (default) | 13.94 ms, 89%, memory-bound | 7.19 ms, 11%, MAC-bound |
+| flat: 0.7 x bandwidth | 19.26 ms, 92%, memory-bound | 7.29 ms, 15%, MAC-bound |
+| flat: 0.9 x bandwidth | 15.33 ms, 90%, memory-bound | 7.21 ms, 12%, MAC-bound |
+| Memory_System_Sim: FR-FCFS, bank groups interleaved | 15.31 ms, 90%, memory-bound | 7.21 ms, 12%, MAC-bound |
+|   ... with 1 MiB chunks | 15.64 ms, 90%, memory-bound | 7.21 ms, 12%, MAC-bound |
+|   ... FCFS scheduler | 23.70 ms, 94%, memory-bound | 7.40 ms, 19%, MAC-bound |
+|   ... a row's bursts in one bank group | 24.43 ms, 94%, memory-bound | 7.42 ms, 19%, MAC-bound |
+
+**Near the balance point** (Min-KS + seeded keys + OTF plaintexts on the ARK-class design with less HBM bandwidth; cells: bootstrap latency, verdict)
+
+| HBM peak | peak bandwidth | flat 0.7 | flat 0.9 | Memory_System_Sim |
+|---|---|---|---|---|
+| 140 GB/s | 10.23 ms, memory-bound | 12.33 ms, memory-bound | 10.78 ms, memory-bound | 10.73 ms, memory-bound |
+| 160 GB/s | 9.66 ms, MAC-bound | 11.46 ms, memory-bound | 10.10 ms, memory-bound | 10.06 ms, memory-bound |
+| 200 GB/s | 8.93 ms, MAC-bound | 10.23 ms, memory-bound | 9.25 ms, MAC-bound | 9.23 ms, MAC-bound |
+| 250 GB/s | 8.33 ms, MAC-bound | 9.34 ms, MAC-bound | 8.57 ms, MAC-bound | 8.56 ms, MAC-bound |
+
+Memory_System_Sim's efficiency for a 4 MiB read chunk after a read: 0.902; 1 MiB: 0.883; refresh alone costs 9.1%.

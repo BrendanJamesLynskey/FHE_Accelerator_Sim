@@ -62,10 +62,18 @@ separate, and a test ladder runs from hand formulas to a JavaScript twin.
   server function, with HEIR's parameters, levels, rotations and bootstrap
   placement. Three of HEIR's example programs are included (`fhe-sim --heir`): LoLa,
   an MNIST MLP, and LoLa with a HEIR-placed bootstrap.
-* **89 tests:** parameter sizes, closed-form operation counts, invariants, analytic
+* **An optional command-level memory model:** `Accelerator(memory=...)` times each
+  HBM chunk with [Memory_System_Sim](https://github.com/BrendanJamesLynskey/Memory_System_Sim)'s
+  HBM model (bank timing, refresh, scheduling, address mapping) instead of peak
+  bandwidth (`fhe-sim --memsim`). Off by default; default results are unchanged.
+* **RTL-calibrated NTT throughput:** [RTL_CoSim_NTT](https://github.com/BrendanJamesLynskey/RTL_CoSim_NTT)
+  verifies a SystemVerilog NTT core against this repo's `ntt_reference` and feeds
+  the butterfly efficiency it measures back into this simulator.
+* **104 tests:** parameter sizes, closed-form operation counts, invariants, analytic
   queueing checks, behaviour, power (both power modes), Hypothesis properties,
   precision, calibration, the model against recorded OpenFHE streams, the HEIR
-  front end (including the same program executed by OpenFHE), and JS ↔ Python parity.
+  front end (including the same program executed by OpenFHE), the memory-model
+  interface, and JS ↔ Python parity.
 
 ---
 
@@ -75,7 +83,7 @@ separate, and a test ladder runs from hand formulas to a JavaScript twin.
 python -m venv .venv
 source .venv/bin/activate
 pip install -e .[dev]
-pytest                                        # 89 tests, about 20 seconds
+pytest                                        # 104 tests, about 20 seconds
 
 fhe-sim                                       # ARK-like parameters on an ARK-class digital design
 fhe-sim --counts                              # operation and byte counts per stage, no timing
@@ -270,6 +278,29 @@ the same order, not a reproduction.
 the published ASICs; energies are round numbers. Calibrate them by regressing
 measured or RTL-derived power on the simulator's event counts.
 
+### A command-level HBM model instead of peak bandwidth
+
+`examples/results.md` §20 runs the same bootstraps with HBM at peak bandwidth (the
+default), with a flat "bandwidth × efficiency" derating, and with
+[Memory_System_Sim](https://github.com/BrendanJamesLynskey/Memory_System_Sim)'s
+command-level HBM2E-class model plugged in as `Accelerator(memory=HBMChunkModel())`:
+
+| ARK-class, baseline algorithm | bootstrap | verdict |
+|---|---|---|
+| peak bandwidth (default) | 13.94 ms | memory-bound |
+| flat 0.7 × bandwidth | 19.26 ms | memory-bound |
+| Memory_System_Sim, FR-FCFS, bank groups interleaved | 15.31 ms | memory-bound |
+| ... FCFS scheduler | 23.70 ms | memory-bound |
+
+FHE traffic is long sequential chunks, so a well-configured controller reaches about
+0.90 of peak, refresh being most of the loss, and the detailed model then agrees with a
+flat 0.9 to 0.2%. Its value is that it derives the number instead of assuming it,
+and shows what breaks it (FCFS scheduling, a mapping that keeps a row's bursts in one bank
+group). Near a balance point it changes the verdict. With all three techniques at 160
+GB/s, peak bandwidth says MAC-bound; the HBM model says memory-bound. At 200 GB/s a
+folklore flat 0.7 says memory-bound, and the HBM model agrees with peak that it is
+MAC-bound.
+
 ---
 
 ## The trace format, and where traces come from
@@ -299,6 +330,7 @@ Anything that can emit this can drive the engine:
 * Operation counts come from this repo's own scheme model. Real libraries differ
   by tens of per cent: different DFT factorisations, EvalMod polynomials, level
   orderings and fused kernels.
+* HBM delivers its peak bandwidth unless a memory model is plugged in (above).
 * Each functional-unit class is one resource with aggregate throughput, and every
   kernel gets the full scratchpad port bandwidth. Bank conflicts and on-chip
   network contention are not modelled.
@@ -327,3 +359,8 @@ this one mirrors). For FHE fundamentals see the
 [Cryptography section](https://github.com/BrendanJamesLynskey/Mathematics#cryptography) of the
 Mathematics hub, especially the
 [Fully Homomorphic Encryption deck](https://brendanjameslynskey.github.io/Cryptography/08-fully-homomorphic-encryption/).
+The [Simulation Engineering Toolkit](https://github.com/BrendanJamesLynskey/SimEng_Hub_Toolkit) series
+builds on it: [RTL_CoSim_NTT](https://github.com/BrendanJamesLynskey/RTL_CoSim_NTT) (RTL verified against
+this NTT), [Memory_System_Sim](https://github.com/BrendanJamesLynskey/Memory_System_Sim) (the HBM model) and
+[SystemC_Accelerator_Model](https://github.com/BrendanJamesLynskey/SystemC_Accelerator_Model) (this
+model's tile in SystemC TLM-2.0, checked against it on the same traces).

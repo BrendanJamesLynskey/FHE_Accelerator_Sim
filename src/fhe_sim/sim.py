@@ -170,6 +170,8 @@ class Simulation:
         self.p_now = 0.0
         self.chunk = self.hw.hbm_chunk_mib * MiB
         self.hbm_w = self.hw.hbm_gbps * 1e9 * self.hw.pj_hbm_byte * 1e-12
+        self.mem = self.hw.memory          # optional detailed memory model (hardware.Accelerator.memory)
+        self.last_write: bool | None = None
         self.env.process(self.issuer())
 
     # ── scratchpad decisions (functional, program order) ─────────────
@@ -257,12 +259,13 @@ class Simulation:
                 hi = mid
         return lo
 
-    def fit_hbm(self) -> float | None:
+    def fit_hbm(self, full_w: float | None = None) -> float | None:
         """Bandwidth fraction in [hbm_min_frac, 1] that fits the headroom now (None: wait)."""
+        full_w = self.hbm_w if full_w is None else full_w
         head = self.budget - self.p_now
-        if self.hbm_w <= head:
+        if full_w <= head:
             return 1.0
-        f = head / self.hbm_w
+        f = head / full_w
         return f if f >= self.hw.hbm_min_frac else None
 
     def wait_power(self, fit, what: str):
@@ -288,6 +291,9 @@ class Simulation:
                 ev.succeed()
 
     def xfer(self, nbytes: int, cls: str, stage: str):
+        if self.mem is not None:
+            yield from self.xfer_model(nbytes, cls, stage)
+            return
         bw, left = self.hw.hbm_gbps * 1e9, nbytes
         while left > 0:
             sz = left if left < self.chunk else self.chunk
@@ -317,6 +323,44 @@ class Simulation:
             self.hbm.release(req)
             self.st.busy["hbm"] += dt
             self.st.energy["hbm"] += sz * self.hw.pj_hbm_byte * 1e-12
+            self.stage_busy(stage, "hbm", dt)
+            self.tracer.span("hbm", cls, f"{cls} {sz / MiB:.1f} MiB", start, dt)
+            left -= sz
+        self.st.bytes[cls] += nbytes
+
+    def xfer_model(self, nbytes: int, cls: str, stage: str):
+        """xfer() with chunk times from the detailed memory model (Accelerator.memory).
+
+        The model sees each chunk's size and direction and the direction of the chunk
+        before it, so turnarounds, row opening and refresh shape the time. HBM energy
+        stays per byte; the power while a chunk moves is that energy over its time.
+        """
+        hw, left = self.hw, nbytes
+        write = cls == "ct_write"
+        while left > 0:
+            sz = left if left < self.chunk else self.chunk
+            req = self.hbm.request()
+            yield req
+            start = self.env.now
+            dt0 = self.mem.chunk_time(sz, write, self.last_write, hw.hbm_gbps)
+            self.last_write = write
+            e = sz * hw.pj_hbm_byte * 1e-12
+            if self.dynamic:
+                f = yield from self.wait_power(lambda: self.fit_hbm(e / dt0), "HBM")
+                dt = dt0 if f >= 1.0 else dt0 / f
+                self.st.power_loss += dt - dt0
+                self.n_active += 1
+                self.power(e / dt)
+                yield self.env.timeout(dt)
+                self.release_power(e / dt)
+            else:
+                dt = dt0
+                self.power(e / dt)
+                yield self.env.timeout(dt)
+                self.power(-e / dt)
+            self.hbm.release(req)
+            self.st.busy["hbm"] += dt
+            self.st.energy["hbm"] += e
             self.stage_busy(stage, "hbm", dt)
             self.tracer.span("hbm", cls, f"{cls} {sz / MiB:.1f} MiB", start, dt)
             left -= sz
