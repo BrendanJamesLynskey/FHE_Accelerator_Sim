@@ -1,0 +1,34 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    strategy:
+      matrix:
+        python: ["3.10", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Install (with Memory_System_Sim for the optional HBM model)
+        run: |
+          pip install -e ".[dev]"
+          pip install "memsim @ git+https://github.com/BrendanJamesLynskey/Memory_System_Sim"
+      - name: Tests (scheme counts, simulator, properties, OpenFHE and HEIR front ends, memory model, JavaScript port bit-exact with Python)
+        run: pytest -rs
+      - name: Headline result unchanged (ARK-class baseline, results.md §1)
+        run: |
+          fhe-sim --params ark --hw ark --json | python -c "
+          import json, sys
+          d = json.load(sys.stdin)
+          print(d['per_bootstrap_s'], d['bound'])
+          assert round(d['per_bootstrap_s'] * 1e3, 2) == 13.94 and d['bound'] == 'memory-bound'
+          "
